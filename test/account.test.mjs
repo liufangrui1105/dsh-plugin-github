@@ -1,10 +1,11 @@
 /**
- * dsh-plugin-github — GitHub 账号绑定测试
+ * dsh-plugin-github — GitHub account-binding tests
  *
- * 覆盖：账号存储（凭据服务后端 / 文件后端）、绑定与切换语义、
- * 首次使用时的自动引导（含用户跳过、环境不可交互）、以及 token 绝不外泄。
+ * Covers: account storage (credentials-service backend / file backend), binding and switching
+ * semantics, the automatic guidance on first use (including the user skipping and a non-interactive
+ * environment), and the fact that the token never leaks.
  *
- * 运行：node test/account.test.mjs
+ * Run: node test/account.test.mjs
  */
 
 import assert from 'node:assert/strict'
@@ -31,7 +32,7 @@ import { extractToken, isSkipAnswer } from '../src/prompt.js'
 
 const runner = createRunner('account.test.mjs')
 
-/** 造一个假的 GitHub /user 响应，并按 token 返回不同身份。 */
+/** Build a fake GitHub /user response and return a different identity per token. */
 function identityFetcher(map) {
   const seen = []
   const fetchImpl = async (url, init) => {
@@ -51,7 +52,7 @@ function identityFetcher(map) {
   return { fetchImpl, seen }
 }
 
-/** 直接测 store + manager（不经插件），方便覆盖后端细节。 */
+/** Test store + manager directly (without the plugin) so backend details are easy to cover. */
 async function managerWith(store, map) {
   const { fetchImpl } = identityFetcher(map)
   return {
@@ -59,7 +60,7 @@ async function managerWith(store, map) {
       store,
       lookupIdentity: async token => {
         const response = await fetchImpl('/user', { headers: { authorization: `Bearer ${token}` } })
-        if (!response.ok) throw new Error('token 校验失败')
+        if (!response.ok) throw new Error('Token verification failed (fake lookupIdentity)')
         const body = await response.json()
         return { login: body.login, name: body.name, scopes: response.headers.get('x-oauth-scopes') }
       },
@@ -68,15 +69,15 @@ async function managerWith(store, map) {
   }
 }
 
-await runner.test('accountIdFor 规范化登录名，拒绝非法输入', async () => {
+await runner.test('accountIdFor normalizes the login name and rejects invalid input', async () => {
   assert.equal(accountIdFor('Octocat'), 'octocat')
   assert.equal(accountIdFor('My-User_99'), 'my-user-99')
   assert.equal(accountIdFor('  A.B  '), 'a-b')
-  assert.throws(() => accountIdFor(''), /无法从登录名/)
-  assert.throws(() => accountIdFor('---'), /无法从登录名/)
+  assert.throws(() => accountIdFor(''), /Cannot derive a valid account id/)
+  assert.throws(() => accountIdFor('---'), /Cannot derive a valid account id/)
 })
 
-await runner.test('文件后端：绑定 → 切换 → 删除，落盘内容不含多余字段', async context => {
+await runner.test('file backend: bind → switch → remove, and the persisted content has no extra fields', async context => {
   const root = await context.setup()
   const file = path.join(root, 'accounts.json')
   const store = createFileStore(file)
@@ -91,12 +92,12 @@ await runner.test('文件后端：绑定 → 切换 → 删除，落盘内容不
   const alice = await manager.bind('t1', { source: 'test' })
   assert.equal(alice.id, 'alice')
   assert.equal(alice.login, 'alice')
-  assert.equal((await manager.active()).login, 'alice', '绑定后应自动成为当前账号')
+  assert.equal((await manager.active()).login, 'alice', 'binding should make it the current account automatically')
 
   const bob = await manager.bind('t2')
-  assert.equal((await manager.active()).login, 'bob', '再次绑定也应切换过去')
+  assert.equal((await manager.active()).login, 'bob', 'binding again should switch over as well')
 
-  // 切换回 alice（按登录名，大小写不敏感）
+  // Switch back to alice (by login name, case-insensitive)
   await manager.use('ALICE')
   assert.equal((await manager.activeId()), 'alice')
 
@@ -109,14 +110,14 @@ await runner.test('文件后端：绑定 → 切换 → 删除，落盘内容不
   assert.deepEqual(removed, { id: 'bob', wasActive: false })
   assert.equal((await manager.list()).length, 1)
 
-  // 落盘文件：可被重新读取，且 token 只在插件自有文件里
+  // The persisted file: it can be read back, and the token lives only in the plugin's own file
   const raw = JSON.parse(await readFile(file, 'utf8'))
   assert.equal(raw.version, 1)
   assert.equal(raw.active, 'alice')
   assert.deepEqual(raw.accounts.map(entry => entry.id), ['alice'])
   assert.equal(raw.accounts[0].token, 't1')
 
-  // 新实例应能从磁盘恢复
+  // A new instance should recover from disk
   const reopened = createFileStore(file)
   const reopenedManager = createAccountManager({
     store: reopened,
@@ -125,7 +126,7 @@ await runner.test('文件后端：绑定 → 切换 → 删除，落盘内容不
   assert.equal((await reopenedManager.active()).login, 'alice')
 })
 
-await runner.test('删除当前账号后指针清空，不会指向不存在的账号', async context => {
+await runner.test('removing the current account clears the pointer instead of pointing at a missing account', async context => {
   const root = await context.setup()
   const store = createFileStore(path.join(root, 'a.json'))
   const { manager } = await managerWith(store, { t1: { login: 'solo' } })
@@ -136,8 +137,8 @@ await runner.test('删除当前账号后指针清空，不会指向不存在的�
   assert.equal(await manager.active(), undefined)
 })
 
-await runner.test('凭据服务后端：record 读写、active 指针、token 不被枚举', async () => {
-  /** 极简内存版凭据服务（含 modifyRecord / deleteRecord / listRecords）。 */
+await runner.test('credentials-service backend: record read/write, the active pointer, and a token that is not enumerable', async () => {
+  /** A minimal in-memory credentials service (with modifyRecord / deleteRecord / listRecords). */
   const records = new Map()
   const provider = {
     async listRecords() {
@@ -163,23 +164,23 @@ await runner.test('凭据服务后端：record 读写、active 指针、token �
   await manager.bind('t1')
   assert.equal((await manager.active()).login, 'carol')
 
-  // record 的 key 必须符合 `<scope>/<id>`，且 token 存在 key 字段里
+  // A record key must be `<scope>/<id>`, and the token is stored in the key field
   const record = records.get('github-repo/carol')
-  assert.ok(record, '应写入 github-repo/carol')
+  assert.ok(record, 'should write github-repo/carol')
   assert.equal(record.kind, 'api-key')
   assert.equal(record.key, 't1')
   assert.equal(record.env.GITHUB_LOGIN, 'carol')
   assert.equal(records.get('github-repo/active').env.ACTIVE, 'carol')
 
-  // 列举只能看到 key 与 kind，看不到 token
+  // Listing exposes only key and kind, never the token
   const entries = await provider.listRecords()
-  assert.ok(!JSON.stringify(entries).includes('t1'), '枚举结果绝不能带 token')
+  assert.ok(!JSON.stringify(entries).includes('t1'), 'the enumeration result must never carry the token')
 
   await manager.remove('carol')
   assert.equal(records.has('github-repo/carol'), false)
 })
 
-await runner.test('selectStore：有凭据服务用凭据服务，没有则回退到文件', async context => {
+await runner.test('selectStore: use the credentials service when present, otherwise fall back to the file', async context => {
   const root = await context.setup()
   const withService = selectStore({
     credentials: { listRecords: async () => [], readRecord: async () => undefined },
@@ -189,33 +190,33 @@ await runner.test('selectStore：有凭据服务用凭据服务，没有则回�
 
   const without = selectStore({ credentials: undefined, dshHome: root })
   assert.equal(without.store.kind, 'file')
-  assert.match(without.reason, /凭据服务未挂载/)
+  assert.match(without.reason, /credentials service is not mounted/)
 
-  // 能力不全的 provider 也应回退（不同 DSH 组合下实现并不一致）
+  // A provider missing capabilities must fall back too (implementations differ across DSH combinations)
   const partial = selectStore({ credentials: { resolve: async () => undefined }, dshHome: root })
-  assert.equal(partial.store.kind, 'file', '缺少 listRecords/readRecord 时必须回退')
+  assert.equal(partial.store.kind, 'file', 'it must fall back when listRecords/readRecord are missing')
 })
 
-await runner.test('accountView / extractToken / isSkipAnswer 的边界', async () => {
+await runner.test('edge cases of accountView / extractToken / isSkipAnswer', async () => {
   const view = accountView({ id: 'a', login: 'alice', token: 'SECRET', scopes: 'repo' }, 'a')
   assert.equal(view.login, 'alice')
   assert.equal(view.active, true)
-  assert.ok(!JSON.stringify(view).includes('SECRET'), 'accountView 不能带 token')
-  assert.equal('name' in view, false, '未设置的字段不应出现')
+  assert.ok(!JSON.stringify(view).includes('SECRET'), 'accountView must not carry a token')
+  assert.equal('name' in view, false, 'unset fields must not appear')
 
   assert.equal(extractToken('ghp_' + 'a'.repeat(36)), 'ghp_' + 'a'.repeat(36))
   assert.equal(extractToken('  ghp_' + 'b'.repeat(40) + '  '), 'ghp_' + 'b'.repeat(40))
   assert.equal(extractToken('github_pat_' + 'c'.repeat(30)), 'github_pat_' + 'c'.repeat(30))
-  assert.equal(extractToken('这是我的 token：ghp_' + 'd'.repeat(36) + '，请绑定'), 'ghp_' + 'd'.repeat(36))
-  assert.equal(extractToken('随便一句话'), undefined)
+  assert.equal(extractToken('this is my token: ghp_' + 'd'.repeat(36) + ', please bind it'), 'ghp_' + 'd'.repeat(36))
+  assert.equal(extractToken('just a short sentence'), undefined)
   assert.equal(extractToken(''), undefined)
-  assert.equal(isSkipAnswer('跳过，暂不绑定'), true)
-  assert.equal(isSkipAnswer('稍后'), true)
+  assert.equal(isSkipAnswer('Skip, do not bind now'), true)
+  assert.equal(isSkipAnswer('Later'), true)
   assert.equal(isSkipAnswer('Skip'), true)
-  assert.equal(isSkipAnswer('使用已有的环境变量'), false)
+  assert.equal(isSkipAnswer('Use the existing environment variable'), false)
 })
 
-await runner.test('插件：gh_account 的 bind/list/use/remove/status 全流程', async context => {
+await runner.test('plugin: the full gh_account bind/list/use/remove/status flow', async context => {
   const root = await context.setup()
   const storeFile = path.join(root, 'accounts.json')
   const plugin = await loadPlugin()
@@ -228,20 +229,20 @@ await runner.test('插件：gh_account 的 bind/list/use/remove/status 全流程
 
   const { fetchImpl, seen } = identityFetcher({ tA: { login: 'alice' }, tB: { login: 'bob', scopes: 'repo,workflow' } })
   await withFakeFetch(fetchImpl, async () => {
-    // 初始：未绑定
+    // Initially: nothing bound
     const initial = await call(tools, 'gh_account', { action: 'list' })
     assert.equal(initial.count, 0)
     assert.equal(initial.backend, 'file')
     assert.match(initial.hint, /bind/)
 
-    // bind（直接给 token）
+    // bind (pass the token directly)
     const bound = await call(tools, 'gh_account', { action: 'bind', token: 'tA' })
     assert.equal(bound.account.login, 'alice')
     assert.equal(bound.active, 'alice')
-    assert.ok(!JSON.stringify(bound).includes('tA'), '返回值绝不能回显 token')
-    assert.equal(seen.at(-1).token, 'tA', '绑定前必须先用该 token 校验身份')
+    assert.ok(!JSON.stringify(bound).includes('tA'), 'the return value must never echo the token')
+    assert.equal(seen.at(-1).token, 'tA', 'the token must verify the identity before binding')
 
-    // 再绑一个 → 自动切换
+    // Bind another one → it switches automatically
     const second = await call(tools, 'gh_account', { action: 'bind', token: 'tB' })
     assert.equal(second.account.login, 'bob')
     assert.equal(second.account.scopes, 'repo,workflow')
@@ -256,30 +257,30 @@ await runner.test('插件：gh_account 的 bind/list/use/remove/status 全流程
     assert.equal(status.configured, true)
     assert.equal(status.identity.login, 'bob')
 
-    // use 切回 alice，并确认后续 status 用的是新账号
+    // use switches back to alice, and a later status confirms it uses the new account
     const used = await call(tools, 'gh_account', { action: 'use', login: 'alice' })
     assert.equal(used.account.login, 'alice')
     const status2 = await call(tools, 'gh_account', { action: 'status' })
     assert.equal(status2.identity.login, 'alice')
-    assert.equal(seen.at(-1).token, 'tA', '切换后应使用 alice 的 token')
+    assert.equal(seen.at(-1).token, 'tA', 'after switching, the alice token should be used')
 
     // remove
     const removed = await call(tools, 'gh_account', { action: 'remove', login: 'bob' })
     assert.equal(removed.removed, 'bob')
     assert.equal((await call(tools, 'gh_account', { action: 'list' })).count, 1)
 
-    // 无效 token 不应被存下来
-    await expectReject(() => call(tools, 'gh_account', { action: 'bind', token: 'bogus' }), /token 校验失败/)
+    // An invalid token must not be stored
+    await expectReject(() => call(tools, 'gh_account', { action: 'bind', token: 'bogus' }), /Token verification failed/)
     assert.equal((await call(tools, 'gh_account', { action: 'list' })).count, 1)
 
-    // 未知账号
-    await expectReject(() => call(tools, 'gh_account', { action: 'use', login: 'nobody' }), /找不到账号/)
+    // Unknown account
+    await expectReject(() => call(tools, 'gh_account', { action: 'use', login: 'nobody' }), /Account ".*" not found/)
   })
 
   assert.equal(logs.filter(([level]) => level === 'error').length, 0)
 })
 
-await runner.test('已绑定账号优先于环境变量（默认用绑定账号）', async context => {
+await runner.test('a bound account takes priority over the environment variable (the bound account is the default)', async context => {
   const root = await context.setup()
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext()
@@ -292,11 +293,11 @@ await runner.test('已绑定账号优先于环境变量（默认用绑定账号�
     await withFakeFetch(fetchImpl, async () => {
       await call(tools, 'gh_account', { action: 'bind', token: 'tBound' })
       const status = await call(tools, 'gh_account', { action: 'status' })
-      assert.equal(status.identity.login, 'bound', '应优先使用绑定的账号')
+      assert.equal(status.identity.login, 'bound', 'the bound account should be preferred')
       assert.equal(seen.at(-1).token, 'tBound')
-      // gh_api 也应走绑定账号
+      // gh_api should use the bound account too
       await call(tools, 'gh_api', { endpoint: '/user' })
-      assert.equal(seen.at(-1).token, 'tBound', 'gh_api 必须用绑定账号的 token')
+      assert.equal(seen.at(-1).token, 'tBound', 'gh_api must use the bound account token')
     })
   } finally {
     if (saved === undefined) delete process.env.GITHUB_TOKEN
@@ -304,7 +305,7 @@ await runner.test('已绑定账号优先于环境变量（默认用绑定账号�
   }
 })
 
-await runner.test('首次需要凭据时自动弹出绑定引导，绑定后立即继续该操作', async context => {
+await runner.test('the binding prompt appears automatically the first time credentials are needed, and the operation continues right after binding', async context => {
   const root = await context.setup()
   const upstream = await makeUpstream(root)
   try {
@@ -313,7 +314,7 @@ await runner.test('首次需要凭据时自动弹出绑定引导，绑定后立�
     const userQuestions = {
       async ask(request) {
         asked.push(request)
-        // 模拟用户在输入框里粘贴了 token
+        // Simulate the user pasting a token into the input box
         return { answers: [{ id: 'github_bind', selected: [], custom: 'ghp_' + 'x'.repeat(36) }] }
       },
     }
@@ -336,34 +337,34 @@ await runner.test('首次需要凭据时自动弹出绑定引导，绑定后立�
     const { fetchImpl, seen } = identityFetcher({ [pastedToken]: { login: 'newbie' } })
 
     await withFakeFetch(fetchImpl, async () => {
-      // 第一步：clone。公开仓库可以匿名拉取，所以这里不会弹窗。
+      // Step 1: clone. A public repository can be fetched anonymously, so no prompt appears here.
       const cloned = await call(
         tools,
         'gh_repo',
         { repo: upstream.repo, action: 'clone' },
         { agent: { fake: 'agent' } },
       )
-      assert.equal(cloned.ok, true, `clone 应成功：${cloned.error ?? ''}`)
-      assert.equal(asked.length, 0, '读取公开仓库不需要凭据，不应弹窗')
+      assert.equal(cloned.ok, true, `clone should succeed: ${cloned.error ?? ''}`)
+      assert.equal(asked.length, 0, 'reading a public repository needs no credentials, so no prompt should appear')
 
-      // 第二步：推送需要写权限 → 应弹出绑定引导，并在绑定后继续完成这次推送。
+      // Step 2: pushing needs write access → the binding prompt should appear, and the push should finish right after binding.
       const pushed = await call(
         tools,
         'gh_push',
         { repo: upstream.repo },
         { agent: { fake: 'agent' } },
       )
-      assert.equal(pushed.ok, true, `绑定后推送应成功：${pushed.error ?? ''}`)
+      assert.equal(pushed.ok, true, `the push after binding should succeed: ${pushed.error ?? ''}`)
 
-      // 弹过引导，且问题里明确说明是在要 PAT
-      assert.equal(asked.length, 1, '应恰好弹一次绑定引导')
+      // The prompt appeared and its question clearly asks for a PAT
+      assert.equal(asked.length, 1, 'the binding prompt should appear exactly once')
       assert.match(asked[0].questions[0].question, /Personal Access Token/)
-      assert.equal(asked[0].agent.fake, 'agent', '必须把发起调用的 agent 一起传下去')
+      assert.equal(asked[0].agent.fake, 'agent', 'the agent that initiated the call must be passed along')
 
-      // 引导输入的 token 被用来校验身份
-      assert.ok(seen.some(entry => entry.token === pastedToken), '应使用用户粘贴的 token 校验身份')
+      // The token typed into the prompt is used to verify the identity
+      assert.ok(seen.some(entry => entry.token === pastedToken), 'the identity should be verified with the token the user pasted')
 
-      // 绑定已持久化，后续调用不再询问
+      // The binding is persisted, so later calls do not ask again
       const listed = await call(tools, 'gh_account', { action: 'list' })
       assert.equal(listed.count, 1)
       assert.equal(listed.accounts[0].login, 'newbie')
@@ -372,21 +373,21 @@ await runner.test('首次需要凭据时自动弹出绑定引导，绑定后立�
       await call(tools, 'gh_file', { repo: upstream.repo, action: 'put', path: 'x.txt', content: 'x\n' })
       await call(tools, 'gh_commit', { repo: upstream.repo, message: 'feat: x' })
       await call(tools, 'gh_push', { repo: upstream.repo })
-      assert.equal(asked.length, 1, '已绑定后不应再弹引导')
+      assert.equal(asked.length, 1, 'no prompt should appear once an account is bound')
     })
   } finally {
     await upstream.http.close()
   }
 })
 
-await runner.test('跳过引导 / 无问答服务时不阻断操作；确实无法继续时给出可操作错误', async context => {
+await runner.test('skipping the prompt / having no question service does not block; a genuinely impossible operation gives an actionable error', async context => {
   const root = await context.setup()
   const upstream = await makeUpstream(root)
   try {
     const plugin = await loadPlugin()
     const base = {
       workspaceRoot: context.workspace,
-      // 同时允许本地测试远端与 me/*，这样 create 的失败原因才是「没有凭据」而不是白名单。
+      // Allow both the local test remote and me/*, so the create failure is "no credentials" rather than the allowlist.
       allowRepos: [upstream.allowRule, 'me/*'],
       allowPush: true,
       allowNonGithubRemotes: true,
@@ -395,16 +396,16 @@ await runner.test('跳过引导 / 无问答服务时不阻断操作；确实无�
     const dir = path.join(context.workspace, repoDirName(upstream.slug))
     assert.equal((await runGit(['clone', upstream.repo, dir])).ok, true)
 
-    // 情形 1：用户选择「跳过」→ 尊重选择，不阻断（本地/无凭据远端照样能推）。
+    // Case 1: the user picks "skip" → respect it and do not block (a local/credential-free remote can still be pushed to).
     const skipContext = fakeContext({
       credentials: undefined,
-      userQuestions: { async ask() { return { answers: [{ id: 'github_bind', selected: ['跳过，暂不绑定'] }] } } },
+      userQuestions: { async ask() { return { answers: [{ id: 'github_bind', selected: ['Skip, do not bind now'] }] } } },
     })
     plugin.apply(skipContext.ctx, { ...base, accountStorePath: path.join(root, 'skip.json') })
     const skippedPush = await call(skipContext.tools, 'gh_push', { repo: upstream.slug }, { agent: { fake: 1 } })
-    assert.equal(skippedPush.ok, true, '跳过绑定后不应阻断本地远端上的推送')
+    assert.equal(skippedPush.ok, true, 'skipping the binding must not block a push to a local remote')
 
-    // 情形 2：完全没有问答服务（子代理 / 无 UI 运行时）→ 同样不阻断、也不挂死。
+    // Case 2: no question service at all (subagent / no-UI runtime) → still no blocking and no hang.
     const noUi = fakeContext({ credentials: undefined, userQuestions: null })
     plugin.apply(noUi.ctx, {
       ...base,
@@ -412,18 +413,18 @@ await runner.test('跳过引导 / 无问答服务时不阻断操作；确实无�
       accountStorePath: path.join(root, 'noui.json'),
     })
     const pushed = await call(noUi.tools, 'gh_push', { repo: upstream.slug }, { agent: { fake: 1 } })
-    assert.equal(pushed.ok, true, '无问答服务时不应阻断，更不应挂死')
+    assert.equal(pushed.ok, true, 'with no question service it must neither block nor hang')
 
-    // 情形 3：确实无法继续的操作（创建远端仓库必须有 token）→ 报错要给出绑定方式。
+    // Case 3: an operation that truly cannot continue (creating a remote repository needs a token) → the error must say how to bind.
     const error = await expectReject(
       () => call(noUi.tools, 'gh_repo',
         { repo: 'me/newrepo', action: 'create', name: 'newrepo', owner: 'me' },
         { agent: { fake: 1 } }),
-      /还没有绑定任何账号|需要 GitHub 凭据|无法写入|401/, 
+      /needs GitHub credentials|no account is bound|401/, 
     )
-    assert.match(error.message, /gh_account action=bind|credentials\.yaml|环境变量/, '错误里要给出绑定方式')
+    assert.match(error.message, /gh_account action=bind|credentials\.yaml|environment variable/, 'the error must say how to bind')
 
-    // 情形 4：配置里关掉自动引导 → 不弹窗，但仍不阻断。
+    // Case 4: the auto-prompt is switched off in the config → no prompt, but still no blocking.
     let asked = 0
     const disabled = fakeContext({
       credentials: undefined,
@@ -436,13 +437,13 @@ await runner.test('跳过引导 / 无问答服务时不阻断操作；确实无�
     })
     const offPush = await call(disabled.tools, 'gh_push', { repo: upstream.slug }, { agent: { fake: 1 } })
     assert.equal(offPush.ok, true)
-    assert.equal(asked, 0, '关闭自动引导后不应弹窗')
+    assert.equal(asked, 0, 'no prompt should appear once the auto-prompt is switched off')
   } finally {
     await upstream.http.close()
   }
 })
 
-await runner.test('gh_account 返回值始终是宿主可接受的无损 JSON', async context => {
+await runner.test('gh_account always returns lossless JSON the host accepts', async context => {
   const root = await context.setup()
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext({ credentials: undefined, userQuestions: undefined })
@@ -464,18 +465,18 @@ await runner.test('gh_account 返回值始终是宿主可接受的无损 JSON', 
         if (node === undefined) { problems.push(`${label}: undefined`); return }
         if (node === null || typeof node !== 'object') return
         if (Array.isArray(node)) { node.forEach((item, index) => walk(item, `${label}[${index}]`)); return }
-        if (Object.getPrototypeOf(node) !== Object.prototype) problems.push(`${label}: 非普通对象`)
+        if (Object.getPrototypeOf(node) !== Object.prototype) problems.push(`${label}: not a plain object`)
         for (const [key, item] of Object.entries(node)) walk(item, `${label}.${key}`)
       }
       walk(value, JSON.stringify(args))
-      assert.deepEqual(problems, [], `gh_account ${JSON.stringify(args)} 含非法值：${problems.join('；')}`)
+      assert.deepEqual(problems, [], `gh_account ${JSON.stringify(args)} contains invalid values: ${problems.join('; ')}`)
       assert.deepEqual(JSON.parse(JSON.stringify(value)), value)
     }
   })
 })
 
 /**
- * 断言一定会被拒绝。
+ * Assert that an operation is definitely rejected.
  * @param {() => unknown} operation
  * @param {RegExp} pattern
  */
@@ -483,14 +484,14 @@ async function expectReject(operation, pattern) {
   let failed
   try {
     const value = await operation()
-    throw new Error(`expectReject：本应被拒绝，却成功返回：${JSON.stringify(value)?.slice(0, 160)}`)
+    throw new Error(`expectReject: expected a rejection but the call succeeded: ${JSON.stringify(value)?.slice(0, 160)}`)
   } catch (error) {
-    if (error instanceof Error && String(error.message).includes('本应被拒绝')) throw error
+    if (error instanceof Error && String(error.message).includes('expected a rejection')) throw error
     failed = error
   }
   const message = failed instanceof Error ? failed.message : String(failed)
   if (!pattern.test(message)) {
-    throw new Error(`expectReject：错误信息与 ${pattern} 不匹配，实际是：${message}`)
+    throw new Error(`expectReject: the error message does not match ${pattern}, actual: ${message}`)
   }
   return failed
 }

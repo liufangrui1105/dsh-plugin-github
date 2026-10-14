@@ -1,9 +1,9 @@
 /**
- * dsh-plugin-github — 工具定义层
+ * dsh-plugin-github — tool definition layer
  *
- * 只描述工具的形状与实现，不关心注册方式：
- * 每个 ToolSpec 提供 name / description / parameters / execute。
- * index.js 负责把这些声明转成 dsh-tools 需要的 ToolDefinition 并注册。
+ * Describes only the shape and implementation of the tools; it does not care how they are
+ * registered: every ToolSpec provides name / description / parameters / execute.
+ * index.js turns these declarations into the ToolDefinition that dsh-tools needs and registers them.
  */
 
 import path from 'node:path'
@@ -33,11 +33,12 @@ import { accountView, describeAccount } from './store.js'
 import { githubRequest } from './api.js'
 
 /**
- * 校验推送时会用到的**每一个**远端地址。
+ * Validate **every** remote address a push may use.
  *
- * `assertOriginMatches` 只看 fetch URL，而 `git push` 优先使用 `remote.origin.pushurl`。
- * 只校验前者会让「被授权的地址」与「真正被访问的地址」不一致：一个写进 .git/config 的
- * pushurl 就能把带 PAT 的请求送到别的主机（审查发现 D3）。
+ * `assertOriginMatches` only looks at the fetch URL, whereas `git push` prefers
+ * `remote.origin.pushurl`. Validating only the former lets "the authorized address" and
+ * "the address actually contacted" diverge: a pushurl written into .git/config is enough
+ * to send the PAT-carrying request to a different host (found in audit D3).
  * @param {import('./repos.js').PluginConfig} cfg
  * @param {{dir: string, slug: string, token?: string, signal?: AbortSignal}} options
  */
@@ -46,31 +47,32 @@ async function assertPushTargetsTrusted(cfg, options) {
   const targets = await pushUrls(dir, { token, signal })
   const allowNonGithub = cfg.allowNonGithubRemotes === true
   if (targets.length === 0) {
-    // 没有显式 pushurl 时 git 用 fetch URL，必须照常校验。
+    // When there is no explicit pushurl, git uses the fetch URL, which must still be validated.
     assertOriginMatches({ dir, requested: slug, actual: await originUrl(dir, { token, signal }), kind: 'origin', allowNonGithub })
     return
   }
   for (const target of targets) {
-    assertOriginMatches({ dir, requested: slug, actual: target, kind: `推送地址 ${target}`, allowNonGithub })
+    assertOriginMatches({ dir, requested: slug, actual: target, kind: `push target ${target}`, allowNonGithub })
   }
 }
 
 const text = value => [{ type: 'text', text: value }]
 
-/** 截断长文本（同时给出原文长度，避免模型误判结果完整性）。 */
+/** Truncate long text (also reporting the original length so the model cannot misjudge completeness). */
 function cap(value, max) {
   const textValue = String(value ?? '')
   if (textValue.length <= max) return textValue
-  return `${textValue.slice(0, max)}\n…（已截断：共 ${textValue.length} 字符，上限 ${max}）`
+  return `${textValue.slice(0, max)}\n…(truncated: ${textValue.length} characters total, limit ${max})`
 }
 
 /**
- * 递归删除对象里的 `undefined` 属性。
+ * Recursively delete `undefined` properties from an object.
  *
- * 宿主的 output 校验用的是「无损 JSON」判定：`JSON.stringify` 会丢掉 `undefined` 属性，
- * 于是 `{ ok: true, x: undefined }` 序列化后与校验前的值不一致，整次工具调用会被判为
- * `value is not lossless JSON` 并失败（在真实宿主里实测踩到）。因此任何可选字段都必须
- * 在这里被摘掉，而不是留在对象里。
+ * The host validates output with a "lossless JSON" check: `JSON.stringify` drops
+ * `undefined` properties, so `{ ok: true, x: undefined }` no longer matches the value seen
+ * before validation and the whole tool call fails with `value is not lossless JSON`
+ * (actually hit in the real host). Every optional field must therefore be stripped here
+ * rather than left on the object.
  * @template T
  * @param {T} value
  * @returns {T}
@@ -92,10 +94,11 @@ function pruneUndefined(value) {
 }
 
 /**
- * 解析 token 并规范成可安全放进工具返回值的形态。
+ * Resolve the token and normalize it into a shape that is safe to put in a tool return value.
  *
- * `ResolvedCredential.value` 是 secret，绝不能进入任何工具返回值——在源头就只保留
- * 来源与配置状态，避免哪天不小心把整个对象返回出去。
+ * `ResolvedCredential.value` is a secret and must never reach any tool return value — keep
+ * only the source and configuration state at the source, so the whole object can never leak
+ * out by accident.
  */
 async function tokenFacts(context, cfg, cwd) {
   const resolved = await resolveToken({
@@ -114,7 +117,7 @@ async function tokenFacts(context, cfg, cwd) {
   }
 }
 
-/** 统一包装：任何抛出都变成清晰的工具错误。 */
+/** Uniform wrapper: every throw becomes a clear tool error. */
 function fail(message) {
   const error = new Error(message)
   error.toolFailure = true
@@ -122,8 +125,9 @@ function fail(message) {
 }
 
 /**
- * 解析以 JSON 字符串传入的复杂参数。
- * 用字符串而不是嵌套对象，是为了不依赖参数 DSL 的嵌套对象写法，两边注册路径都安全。
+ * Parse complex parameters passed in as JSON strings.
+ * Strings are used instead of nested objects so as not to depend on the parameter DSL's
+ * nested-object syntax; that is safe on both registration paths.
  * @param {unknown} raw
  * @param {string} name
  * @param {'object'|'array'} kind
@@ -131,29 +135,30 @@ function fail(message) {
 function parseJsonArg(raw, name, kind) {
   if (raw === undefined || raw === null || raw === '') return undefined
   if (typeof raw === 'object') return raw
-  if (typeof raw !== 'string') throw fail(`${name} 需要 JSON 字符串。`)
+  if (typeof raw !== 'string') throw fail(`${name} must be a JSON string.`)
   let parsed
   try {
     parsed = JSON.parse(raw)
   } catch (error) {
-    throw fail(`${name} 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`)
+    throw fail(`${name} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
   }
   if (kind === 'object' && (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))) {
-    throw fail(`${name} 必须是 JSON 对象，例如 {"state":"open"}。`)
+    throw fail(`${name} must be a JSON object, for example {"state":"open"}.`)
   }
   return parsed
 }
 
 /**
- * 规范化 API endpoint 并解析出目标仓库（owner/repo）。
+ * Normalize an API endpoint and extract the target repository (owner/repo).
  *
- * 必须先用 `new URL()` 规范化再解析路径：授权看的是原始字符串，而真正发出去的请求走
- * URL 规范化，`/repos/allowed/repo/../../secret/repo/issues` 会被授权成 `allowed/repo`
- * 却打到 `secret/repo`（审查发现 D1）。规范化后按 `/repos/{owner}/{repo}` 取。
+ * The path must be parsed only after normalizing with `new URL()`: authorization looks at
+ * the raw string, while the request actually sent goes through URL normalization, so
+ * `/repos/allowed/repo/../../secret/repo/issues` would be authorized as `allowed/repo` but
+ * hit `secret/repo` (found in audit D1). After normalization, take `/repos/{owner}/{repo}`.
  *
  * @param {string} endpoint
  * @returns {{ pathname: string, host: string, repo?: string }}
- * @throws {Error} endpoint 无法解析，或指向非 api.github.com 的主机
+ * @throws {Error} endpoint cannot be parsed, or points at a host other than api.github.com
  */
 function parseEndpoint(endpoint) {
   const raw = String(endpoint).trim()
@@ -162,10 +167,10 @@ function parseEndpoint(endpoint) {
   try {
     url = new URL(raw, 'https://api.github.com')
   } catch {
-    throw fail(`endpoint 无法解析："${raw}"。示例：/repos/owner/repo/pulls。`)
+    throw fail(`endpoint cannot be parsed: "${raw}". Example: /repos/owner/repo/pulls.`)
   }
   if (absolute && url.hostname.toLowerCase() !== 'api.github.com') {
-    throw fail(`出于安全考虑，只允许访问 api.github.com（收到 ${url.origin}）。`)
+    throw fail(`For security, only api.github.com may be accessed (got ${url.origin}).`)
   }
   const pathname = url.pathname
   const match = pathname.match(/^\/repos\/([^/]+)\/([^/]+)/)
@@ -179,8 +184,9 @@ function parseEndpoint(endpoint) {
 }
 
 /**
- * 哪些 endpoint 前缀可能触及仓库内容或状态（有白名单时不应被默许绕过）。
- * `/user`、`/rate_limit` 这类账号/元信息端点不属于仓库内容，放行。
+ * Which endpoint prefixes may touch repository content or state (these must not be waved
+ * through by default when an allowlist exists).
+ * Account/meta endpoints such as `/user` and `/rate_limit` are not repository content, so they pass.
  */
 const REPO_SCOPED_PREFIXES = [
   '/repos/', '/search/', '/orgs/', '/users/', '/user/repos', '/user/subscriptions',
@@ -189,11 +195,12 @@ const REPO_SCOPED_PREFIXES = [
 
 
 /**
- * 拒绝写入 .git 内部文件。
+ * Refuse to write .git internal files.
  *
- * `.git/config` 能改 `remote.origin.pushurl`（把带 PAT 的推送重定向到别的主机），
- * `.git/hooks/*` 是任意代码执行，`.git/HEAD` 等会直接破坏仓库。读取仍然允许
- * （某些排查场景需要看 config），写入一律拒绝。
+ * `.git/config` can change `remote.origin.pushurl` (redirecting a PAT-carrying push to
+ * another host), `.git/hooks/*` is arbitrary code execution, and `.git/HEAD` and friends
+ * corrupt the repository outright. Reading is still allowed (some debugging needs to see
+ * the config); writing is always refused.
  * @param {string} repoDir
  * @param {string} target
  * @param {string} relative
@@ -204,8 +211,8 @@ function assertNotGitInternals(repoDir, target, relative) {
   const insideGit = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
   if (insideGit) {
     throw fail(
-      `拒绝修改 ${relative}：.git 目录内部（config / hooks / HEAD 等）不允许通过 gh_file 写入。`
-      + '.git/config 可以重定向推送地址（把凭据发到别的主机），.git/hooks 则是任意代码执行。',
+      `Refusing to modify ${relative}: the inside of the .git directory (config / hooks / HEAD, etc.) cannot be written through gh_file.`
+      + ' .git/config can redirect the push address (sending credentials to another host), and .git/hooks is arbitrary code execution.',
     )
   }
 }
@@ -217,7 +224,7 @@ function assertNotGitInternals(repoDir, target, relative) {
  */
 
 /**
- * 构造全部工具定义。
+ * Build every tool definition.
  * @param {ToolContext} context
  */
 export function buildToolSpecs(context) {
@@ -225,7 +232,7 @@ export function buildToolSpecs(context) {
   const accounts = context.host.accounts
   const userQuestions = context.host.userQuestions
 
-  /** 解析 token（每次调用都重新解析，保证切换账号/轮换凭据立即生效）。 */
+  /** Resolve the token (re-resolved on every call, so switching accounts or rotating credentials takes effect immediately). */
   const token = async cwd => resolveToken({
     accounts,
     credentials: context.host.credentials,
@@ -236,22 +243,24 @@ export function buildToolSpecs(context) {
   })
 
   /**
-   * 需要凭据的操作统一走这里：
-   *   1. 先按正常顺序解析；
-   *   2. 解析不到且是一次「真人可交互」的调用 → 弹出绑定引导，绑定后立即重试；
-   *   3. 仍然拿不到 → 抛出带可操作指引的错误。
+   * Every operation that needs credentials goes through here:
+   *   1. resolve in the normal order first;
+   *   2. if it does not resolve and this is a call a human can interact with → prompt the
+   *      binding guide, and retry immediately after binding;
+   *   3. still nothing → throw an error carrying actionable guidance.
    *
-   * @param {string} reason 为什么要凭据（用于引导文案）
+   * @param {string} reason why credentials are needed (used in the guidance text)
    * @param {{cwd?: string, exec?: any}} [options]
    */
   const requireToken = async (reason, options = {}) => {
     const first = await token(options.cwd)
-    // 已经明确生效的凭据（绑定账号 / 凭据服务 / 非回退路径）直接用。
+    // A credential that is already explicitly in effect (bound account / credentials service / non-fallback path) is used as is.
     if (first.configured && first.viaEnvFallback !== true) return first
 
-    // 能否向用户提问，是「要不要弹绑定引导」的唯一门槛。
-    // 交互不可用（子代理、无 UI 运行时、配置关掉）时**不阻断**：照旧把操作放下去，
-    // 让远端自己决定成败——这样本地/内网不需要凭据的远端仍然能用。
+    // Whether the user can be asked is the only gate for "should the binding guide pop up".
+    // When interaction is unavailable (subagent, UI-less runtime, disabled by config) do
+    // **not** block: let the operation through as before and let the remote decide the
+    // outcome — that way local/intranet remotes that need no credentials still work.
     const interactive = cfg.allowAutoBind !== false
       && cfg.promptForToken !== false
       && userQuestions !== undefined
@@ -268,19 +277,19 @@ export function buildToolSpecs(context) {
     })
 
     if (asked.status === 'answered') {
-      const bound = await accounts.bind(asked.token, { source: 'gh_account bind（对话输入）' })
+      const bound = await accounts.bind(asked.token, { source: 'gh_account bind (entered in conversation)' })
       const retried = await token(options.cwd)
       if (retried.configured) {
-        return { ...retried, detail: `${retried.detail}（刚刚绑定 @${bound.login}）`, justBound: bound.login }
+        return { ...retried, detail: `${retried.detail} (just bound @${bound.login})`, justBound: bound.login }
       }
     }
 
     if (asked.status === 'skipped') {
-      // 用户主动跳过：尊重选择，让操作照旧往下走。
+      // The user skipped deliberately: respect that choice and let the operation continue as before.
       return first
     }
 
-    // 交互不可用，但有环境变量兜底 → 用它。
+    // Interaction is unavailable, but an environment variable provides a fallback → use it.
     if (first.configured) return first
     throw fail(unboundMessage(asked.detail))
   }
@@ -289,11 +298,11 @@ export function buildToolSpecs(context) {
   const repoAction = {
     clone: async (args, exec) => {
       const { dir, slug } = await resolveRepo(cfg, args.repo, { requireLocal: false })
-      // 白名单必须针对「将要操作的那个仓库」，而不是别的派生字符串。
+      // The allowlist must be checked against "the repository that will actually be operated on", not some other derived string.
       if (!repoAllowed(cfg, slug)) {
-        throw fail(`仓库 ${slug} 不在 allowRepos 白名单内（当前：${cfg.allowRepos.join(', ')}）。`)
+        throw fail(`Repository ${slug} is not in the allowRepos allowlist (current: ${cfg.allowRepos.join(', ')}).`)
       }
-      // 目录已存在时，origin 必须就是请求的仓库：否则 fetch 会去拉另一个远端。
+      // If the directory already exists, origin must be exactly the requested repository: otherwise fetch would pull from a different remote.
       if (await isGitRepo(dir)) {
         assertOriginMatches({ dir, requested: slug, actual: await originUrl(dir, { signal: exec.signal }), allowNonGithub: cfg.allowNonGithubRemotes === true })
       }
@@ -309,9 +318,9 @@ export function buildToolSpecs(context) {
       })
       if (!result.ok) {
         throw fail(
-          `${reused ? 'fetch' : 'clone'} 失败：${result.error ?? (result.stderr || '未知错误')}\n`
-          + `目标目录：${dir}\n`
-          + (auth.configured ? '' : `提示：未配置 token（${auth.detail}）。私有仓库需要 token；公开仓库也应该配置以避免限流。`),
+          `${reused ? 'fetch' : 'clone'} failed: ${result.error ?? (result.stderr || 'unknown error')}\n`
+          + `Target directory: ${dir}\n`
+          + (auth.configured ? '' : `Hint: no token is configured (${auth.detail}). Private repositories need a token; public repositories should configure one too, to avoid rate limiting.`),
         )
       }
       const head = await headCommit(dir, { signal: exec.signal })
@@ -322,7 +331,7 @@ export function buildToolSpecs(context) {
         repo: slug,
         head,
         auth: auth.configured ? auth.source : 'anonymous',
-        note: reused ? '本地已存在该仓库，只做了 fetch --prune' : '克隆完成',
+        note: reused ? 'The repository already exists locally; only fetch --prune was run' : 'Clone complete',
         output: cap(result.stderr || result.stdout, 4000),
       })
     },
@@ -331,11 +340,11 @@ export function buildToolSpecs(context) {
       const { dir, slug } = await resolveRepo(cfg, args.repo)
       const { entries, result } = await statusEntries(dir, { signal: exec.signal })
       if (!result.ok) {
-        throw fail(`git status 失败（${dir} 可能不是有效的 git 仓库）：${result.error ?? (result.stderr || result.stdout)}`)
+        throw fail(`git status failed (${dir} may not be a valid git repository): ${result.error ?? (result.stderr || result.stdout)}`)
       }
       const head = await headCommit(dir, { signal: exec.signal })
       const origin = await originUrl(dir, { signal: exec.signal })
-      // head/origin 都可能是 undefined（空仓库、没有 remote）：必须摘掉而不是留在返回值里。
+      // head/origin can both be undefined (empty repository, no remote): they must be stripped out rather than left in the return value.
       return pruneUndefined({
         ok: true,
         action: 'status',
@@ -367,7 +376,7 @@ export function buildToolSpecs(context) {
         staged,
         file: args.file,
         truncated,
-        diff: body === '' ? '（没有差异）' : body,
+        diff: body === '' ? '(no differences)' : body,
       })
     },
 
@@ -379,7 +388,7 @@ export function buildToolSpecs(context) {
         cwd: dir, limit, path: args.file, signal: exec.signal,
       })
       if (!result.ok) {
-        throw fail(`git log 失败：${result.error ?? (result.stderr || result.stdout)}`)
+        throw fail(`git log failed: ${result.error ?? (result.stderr || result.stdout)}`)
       }
       return { ok: true, action: 'log', repo: slug, limit, count: entries.length, commits: entries }
     },
@@ -388,39 +397,40 @@ export function buildToolSpecs(context) {
       const { dir, slug } = await resolveRepo(cfg, args.repo)
       const { entries, result } = await branches(dir, { signal: exec.signal })
       if (!result.ok) {
-        throw fail(`git branch 失败：${result.error ?? (result.stderr || result.stdout)}`)
+        throw fail(`git branch failed: ${result.error ?? (result.stderr || result.stdout)}`)
       }
       return { ok: true, action: 'branches', repo: slug, branches: entries }
     },
 
     create: async (args, exec) => {
-      // 建远端仓库是写操作：必须显式开启 allowApiWrite，并按 owner/name 过白名单。
+      // Creating a remote repository is a write: allowApiWrite must be explicitly enabled, and owner/name must pass the allowlist.
       if (!cfg.allowApiWrite) {
-        throw fail('action=create 被拒绝：配置 allowApiWrite 为 false（创建远端仓库属于写操作）。')
+        throw fail('action=create refused: allowApiWrite is configured as false (creating a remote repository is a write operation).')
       }
       if (typeof args.name !== 'string' || args.name.trim() === '') {
-        throw fail('action=create 需要 name 参数（新仓库名）。')
+        throw fail('action=create requires the name parameter (the new repository name).')
       }
       const newName = args.name.trim()
       if (!/^[A-Za-z0-9._-]+$/.test(newName)) {
-        throw fail(`仓库名 "${args.name}" 非法：只允许字母、数字、点、下划线、连字符。`)
+        throw fail(`Repository name "${args.name}" is invalid: only letters, digits, dots, underscores and hyphens are allowed.`)
       }
       const ownerScoped = typeof args.owner === 'string' && args.owner.trim() !== ''
       const owner = ownerScoped ? args.owner.trim() : undefined
       if (owner !== undefined && !/^[A-Za-z0-9._-]+$/.test(owner)) {
-        throw fail(`owner "${args.owner}" 非法：只允许字母、数字、点、下划线、连字符。`)
+        throw fail(`owner "${args.owner}" is invalid: only letters, digits, dots, underscores and hyphens are allowed.`)
       }
       if (owner !== undefined && !repoAllowed(cfg, `${owner}/${newName}`)) {
-        throw fail(`目标 ${owner}/${newName} 不在 allowRepos 白名单内，拒绝创建。`)
+        throw fail(`Target ${owner}/${newName} is not in the allowRepos allowlist; refusing to create it.`)
       }
       if (owner === undefined && cfg.allowRepos.length > 0) {
-        // 不带 owner 会创建到「当前登录账号」下，无法与白名单比对——不能因为无法判断就放行。
+        // Without owner the repository is created under "the currently signed-in account",
+        // which cannot be compared against the allowlist — an unjudgeable target must not be allowed through.
         throw fail(
-          'allowRepos 白名单已生效时，action=create 必须显式给出 owner（否则目标账号无法与白名单比对）。'
-          + '请传 owner: "your-name"。',
+          'While the allowRepos allowlist is in effect, action=create must give owner explicitly (otherwise the target account cannot be compared against the allowlist).'
+          + ' Pass owner: "your-name".',
         )
       }
-      const auth = await requireToken('创建远端仓库需要写权限。', { cwd: cfg.workspaceRoot, exec })
+      const auth = await requireToken('Creating a remote repository requires write permission.', { cwd: cfg.workspaceRoot, exec })
       const endpoint = owner !== undefined ? `/orgs/${owner}/repos` : '/user/repos'
       const response = await githubRequest(endpoint, {
         method: 'POST',
@@ -434,15 +444,15 @@ export function buildToolSpecs(context) {
         },
       })
       if (!response.ok) {
-        // 缺凭据时 GitHub 返回 401/403：把「去绑定账号」这一步明确说出来，
-        // 而不是把裸 HTTP 错误丢给用户。
+        // GitHub returns 401/403 when credentials are missing: spell out the "go bind an
+        // account" step instead of throwing a bare HTTP error at the user.
         if (response.status === 401 || response.status === 403) {
           throw fail(
-            `创建仓库失败（HTTP ${response.status}）：${response.error ?? '认证失败'}\n`
+            `Failed to create the repository (HTTP ${response.status}): ${response.error ?? 'authentication failed'}\n`
             + unboundMessage(auth.detail),
           )
         }
-        throw fail(response.error ?? '创建仓库失败')
+        throw fail(response.error ?? 'Failed to create the repository')
       }
       const created = /** @type {{full_name?: string, html_url?: string, clone_url?: string}} */ (response.json ?? {})
       return {
@@ -451,7 +461,7 @@ export function buildToolSpecs(context) {
         repo: created.full_name,
         url: created.html_url,
         clone_url: created.clone_url,
-        note: `已创建远端仓库。可用 gh_repo action=clone repo="${created.full_name}" 克隆到工作区。`,
+        note: `Remote repository created. Use gh_repo action=clone repo="${created.full_name}" to clone it into the workspace.`,
       }
     },
   }
@@ -469,7 +479,7 @@ export function buildToolSpecs(context) {
       try {
         content = await readFile(target, 'utf8')
       } catch (error) {
-        throw fail(`读取失败 ${relative}：${error instanceof Error ? error.message : String(error)}`)
+        throw fail(`Failed to read ${relative}: ${error instanceof Error ? error.message : String(error)}`)
       }
       const allLines = content.split('\n')
       const from = Math.min(startLine, allLines.length)
@@ -485,7 +495,7 @@ export function buildToolSpecs(context) {
         from,
         to,
         returnedLines: window.length,
-        // 只有真的漏掉了内容才算截断：读到文件末尾时不该误报。
+        // Only report truncation when content was genuinely left out: reaching the end of the file must not be flagged.
         truncated: from > 1 || to < allLines.length,
         content: cap(numbered, cfg.maxReadChars),
       }
@@ -498,7 +508,7 @@ export function buildToolSpecs(context) {
       try {
         entries = await readdir(target, { withFileTypes: true })
       } catch (error) {
-        throw fail(`列目录失败 ${args.path ?? '.'}：${error instanceof Error ? error.message : String(error)}`)
+        throw fail(`Failed to list directory ${args.path ?? '.'}: ${error instanceof Error ? error.message : String(error)}`)
       }
       const bypassed = new Set(['node_modules', '.venv', 'dist', 'build', '__pycache__'])
       const listed = []
@@ -533,7 +543,7 @@ export function buildToolSpecs(context) {
     },
 
     put: async (args, exec) => {
-      if (typeof args.content !== 'string') throw fail('action=put 需要 content 参数。')
+      if (typeof args.content !== 'string') throw fail('action=put requires the content parameter.')
       const { dir, slug } = await resolveRepo(cfg, args.repo)
       const target = await ensureInsideWorkspace(cfg, path.resolve(dir, args.path))
       const relative = path.relative(dir, target).split(path.sep).join('/')
@@ -546,7 +556,7 @@ export function buildToolSpecs(context) {
       }
       if (existed && args.overwrite !== true) {
         throw fail(
-          `${relative} 已存在。要整体覆盖请设置 overwrite: true；只是局部改动用 gh_file action=edit。`,
+          `${relative} already exists. To overwrite it entirely set overwrite: true; for a partial change use gh_file action=edit.`,
         )
       }
       await mkdir(path.dirname(target), { recursive: true })
@@ -558,7 +568,7 @@ export function buildToolSpecs(context) {
         path: relative,
         bytes: Buffer.byteLength(args.content, 'utf8'),
         created: !existed,
-        note: existed ? '已覆盖写入' : '已新建文件',
+        note: existed ? 'Overwritten' : 'File created',
       }
     },
 
@@ -571,24 +581,24 @@ export function buildToolSpecs(context) {
       try {
         original = await readFile(target, 'utf8')
       } catch (error) {
-        throw fail(`读取失败 ${relative}：${error instanceof Error ? error.message : String(error)}`)
+        throw fail(`Failed to read ${relative}: ${error instanceof Error ? error.message : String(error)}`)
       }
       if (typeof args.oldText !== 'string' || args.oldText === '') {
-        throw fail('action=edit 需要非空的 oldText。')
+        throw fail('action=edit requires a non-empty oldText.')
       }
-      if (typeof args.newText !== 'string') throw fail('action=edit 需要 newText（可为空字符串表示删除）。')
+      if (typeof args.newText !== 'string') throw fail('action=edit requires newText (an empty string means delete).')
 
       const parts = original.split(args.oldText)
       const occurrences = parts.length - 1
       const expected = Number.isFinite(args.count) ? Number(args.count) : 1
-      if (expected < 1) throw fail(`count 必须 ≥ 1，收到 ${args.count}。`)
+      if (expected < 1) throw fail(`count must be ≥ 1, got ${args.count}.`)
       if (occurrences === 0) {
-        throw fail(`${relative} 中找不到 oldText。请先用 gh_file action=get 确认原文（注意缩进与换行）。`)
+        throw fail(`oldText was not found in ${relative}. Use gh_file action=get first to confirm the exact original text (mind the indentation and line breaks).`)
       }
       if (occurrences !== expected) {
         throw fail(
-          `${relative} 中 oldText 出现 ${occurrences} 次，与 count=${expected} 不符。`
-          + '请扩大上下文让 oldText 唯一，或用 count 明确要替换几次。',
+          `oldText appears ${occurrences} time(s) in ${relative}, which does not match count=${expected}.`
+          + ' Widen the context so oldText is unique, or use count to state exactly how many replacements you want.',
         )
       }
       const updated = parts.join(args.newText)
@@ -613,15 +623,15 @@ export function buildToolSpecs(context) {
     const paths = Array.isArray(args.paths) && args.paths.length > 0 ? args.paths.map(String) : ['.']
     const addResult = await stage(dir, paths, { signal: exec.signal, timeoutMs: cfg.commandTimeoutMs })
     if (!addResult.ok) {
-      throw fail(`git add 失败：${addResult.error ?? (addResult.stderr || addResult.stdout)}\n（路径：${paths.join(', ')}）`)
+      throw fail(`git add failed: ${addResult.error ?? (addResult.stderr || addResult.stdout)}\n(paths: ${paths.join(', ')})`)
     }
 
     const { entries } = await statusEntries(dir, { signal: exec.signal })
     const stagedEntries = entries.filter(entry => entry.code !== '??')
     if (stagedEntries.length === 0) {
       throw fail(
-        '暂存区为空，没有可提交的内容。'
-        + '（可能 path 写错了，或改动已被忽略；用 gh_repo action=status 查看。）',
+        'The staging area is empty; there is nothing to commit.'
+        + ' (The path may be wrong, or the changes are ignored; check with gh_repo action=status.)',
       )
     }
 
@@ -634,21 +644,21 @@ export function buildToolSpecs(context) {
       },
     })
     if (!commitResult.ok) {
-      throw fail(`git commit 失败：${commitResult.error ?? (commitResult.stderr || commitResult.stdout)}`)
+      throw fail(`git commit failed: ${commitResult.error ?? (commitResult.stderr || commitResult.stdout)}`)
     }
     const after = await headCommit(dir, { signal: exec.signal })
 
     let pushed
     if (args.push === true) {
       const denied = checkWriteAllowed(cfg, slug, 'push')
-      if (denied) throw fail(`${denied}\n（提交已在本地完成：${after?.sha}，但未推送。）`)
-      const auth = await requireToken('推送提交到远端需要写权限。', { cwd: dir, exec })
+      if (denied) throw fail(`${denied}\n(The commit is already made locally: ${after?.sha}, but nothing was pushed.)`)
+      const auth = await requireToken('Pushing the commit to the remote requires write permission.', { cwd: dir, exec })
       await assertPushTargetsTrusted(cfg, { dir, slug, token: auth.token, signal: exec.signal })
       const pushResult = await gitPush(dir, { token: auth.token, signal: exec.signal, setUpstream: true })
       if (!pushResult.ok) {
         throw fail(
-          `已在本地提交 ${after?.sha}，但推送失败：${pushResult.error ?? (pushResult.stderr || pushResult.stdout)}\n`
-          + '（可用 gh_repo action=status 检查，再调用 gh_push 单独重试推送。）',
+          `Committed locally as ${after?.sha}, but the push failed: ${pushResult.error ?? (pushResult.stderr || pushResult.stdout)}\n`
+          + ' (Check with gh_repo action=status, then call gh_push to retry the push on its own.)',
         )
       }
       pushed = { ok: true, output: cap(pushResult.stderr || pushResult.stdout, 4000) }
@@ -668,20 +678,20 @@ export function buildToolSpecs(context) {
 
   // ---------------------------------------------------------------- gh_push
   const pushTool = async (args, exec) => {
-    // 先过白名单，再去碰本地路径：未授权仓库不该因为「目录不存在」而泄漏本地布局信息。
+    // Check the allowlist before touching local paths: an unauthorized repository must not leak local layout information just because "the directory does not exist".
     const requestedSlug = repoSlug(String(args.repo)) ?? String(args.repo)
     const denied = checkWriteAllowed(cfg, requestedSlug, 'push')
     if (denied) throw fail(denied)
     const { dir, slug } = await resolveRepo(cfg, args.repo)
-    const auth = await requireToken('推送到远端需要写权限。', { cwd: dir, exec })
-    // 白名单校验的是 args.repo，实际推送目标是目录里的 origin——两者必须一致。
+    const auth = await requireToken('Pushing to the remote requires write permission.', { cwd: dir, exec })
+    // The allowlist validates args.repo, but the actual push target is origin in the directory — the two must agree.
     await assertPushTargetsTrusted(cfg, { dir, slug, token: auth.token, signal: exec.signal })
     if (args.force === true && !cfg.allowForcePush) {
-      throw fail('force 推送被拒绝：配置 allowForcePush 为 false。（即便开启也只使用 --force-with-lease。）')
+      throw fail('Force push refused: allowForcePush is configured as false. (Even when enabled, only --force-with-lease is used.)')
     }
     const before = await headCommit(dir, { signal: exec.signal })
-    // 没有 token 时不直接拒绝：本地/内网远端可能本来就不需要凭据，
-    // 让远端自己决定，失败时再给出「配置 token」的可操作提示。
+    // Without a token, do not refuse outright: local/intranet remotes may genuinely need no
+    // credentials, so let the remote decide and give an actionable "configure a token" hint only on failure.
     const result = await gitPush(dir, {
       token: auth.token,
       signal: exec.signal,
@@ -693,16 +703,16 @@ export function buildToolSpecs(context) {
       const unauthenticated = /Authentication failed|could not read Username|terminal prompts disabled|403/i
         .test(`${result.stderr}${result.stdout}`)
       const hint = unauthenticated && !auth.configured
-        ? `\n当前没有可用凭据（${auth.detail}）。请用 gh_config action=set 写入 PAT，或设置环境变量 ${cfg.tokenEnv}。`
-        : '常见原因：远端有新提交（先 gh_pull）；分支保护不允许直推（改用 PR 流程）；token 缺少 repo 权限。'
-      throw fail(`推送失败：${result.error ?? (result.stderr || result.stdout)}\n${hint}`)
+        ? `\nNo usable credential is available right now (${auth.detail}). Use gh_config action=set to store a PAT, or set the environment variable ${cfg.tokenEnv}.`
+        : 'Common causes: the remote has new commits (run gh_pull first); branch protection forbids a direct push (use a PR flow instead); the token lacks repo permission.'
+      throw fail(`Push failed: ${result.error ?? (result.stderr || result.stdout)}\n${hint}`)
     }
     return {
       ok: true,
       action: 'push',
       repo: slug,
       head: before,
-      branch: args.branch ?? '（当前分支 → 同名远端分支）',
+      branch: args.branch ?? '(current branch → same-named remote branch)',
       force: args.force === true,
       output: cap(result.stderr || result.stdout, 4000),
     }
@@ -711,8 +721,8 @@ export function buildToolSpecs(context) {
   // ---------------------------------------------------------------- gh_pull
   const pullTool = async (args, exec) => {
     const { dir, slug } = await resolveRepo(cfg, args.repo)
-    const auth = await requireToken('拉取远端改动需要凭据。', { cwd: dir, exec })
-    // 拉取会改动本地历史，同样要求 origin 与请求的仓库一致。
+    const auth = await requireToken('Pulling remote changes requires credentials.', { cwd: dir, exec })
+    // A pull rewrites local history, so it likewise requires origin to match the requested repository.
     await assertPushTargetsTrusted(cfg, { dir, slug, token: auth.token, signal: exec.signal })
     const before = await headCommit(dir, { signal: exec.signal })
     const result = await gitPull(dir, {
@@ -722,9 +732,9 @@ export function buildToolSpecs(context) {
     })
     if (!result.ok) {
       const hint = /diverg|non-fast-forward|Not possible to fast-forward/i.test(`${result.stderr}${result.stdout}`)
-        ? '\n本地与远端已分叉。可选择：把 rebase: true 打开重试，或先 gh_commit 提交本地改动再处理。'
+        ? '\nLocal and remote have diverged. Options: retry with rebase: true, or gh_commit the local changes first and then deal with it.'
         : ''
-      throw fail(`拉取失败：${result.error ?? (result.stderr || result.stdout)}${hint}`)
+      throw fail(`Pull failed: ${result.error ?? (result.stderr || result.stdout)}${hint}`)
     }
     const after = await headCommit(dir, { signal: exec.signal })
     return {
@@ -742,7 +752,7 @@ export function buildToolSpecs(context) {
   const configTool = async args => {
     if (args.action === 'set') {
       if (typeof args.token !== 'string' || args.token.trim() === '') {
-        throw fail('action=set 需要 token 参数（GitHub Personal Access Token）。')
+        throw fail('action=set requires the token parameter (a GitHub Personal Access Token).')
       }
       const stored = await storeToken({ credentials: context.host.credentials, tokenRef: cfg.tokenRef }, args.token)
       if (!stored.ok) throw fail(stored.detail)
@@ -774,7 +784,7 @@ export function buildToolSpecs(context) {
             scopes: who.headers['x-oauth-scopes'],
             rate_remaining: who.rateLimit?.remaining,
           })
-        : { ok: false, error: who.error ?? '请求失败' }
+        : { ok: false, error: who.error ?? 'request failed' }
     }
     return pruneUndefined({
       ok: true,
@@ -789,14 +799,14 @@ export function buildToolSpecs(context) {
 
   // ---------------------------------------------------------------- gh_account
   /**
-   * 账号绑定工具。这是用户「绑定哪个 GitHub 账号」的显式入口，
-   * 也是首次使用时自动引导的落点。
+   * Account binding tool. This is the user's explicit entry point for "which GitHub
+   * account to bind", and also where the automatic first-use guidance lands.
    */
   const accountTool = async (args, exec) => {
     if (accounts === undefined) {
       throw fail(
-        '账号存储不可用，无法管理账号绑定。'
-        + `可改为在 $DSH_HOME/.credentials.yaml 的 refs: 段写入 ${cfg.tokenRef}，或设置环境变量 ${cfg.tokenEnv}。`,
+        'Account storage is unavailable, so account bindings cannot be managed.'
+        + ` Instead, write ${cfg.tokenRef} into the refs: section of $DSH_HOME/.credentials.yaml, or set the environment variable ${cfg.tokenEnv}.`,
       )
     }
 
@@ -811,8 +821,8 @@ export function buildToolSpecs(context) {
         count: records.length,
         accounts: records.map(record => accountView(record, activeId)),
         hint: records.length === 0
-          ? '还没有绑定任何账号。用 action=bind 绑定（会弹出输入框，或直接把 token 传进来）。'
-          : '用 action=use 切换默认账号。',
+          ? 'No account is bound yet. Bind one with action=bind (a prompt appears, or pass the token in directly).'
+          : 'Use action=use to switch the default account.',
       })
     }
 
@@ -821,18 +831,18 @@ export function buildToolSpecs(context) {
       let fromPrompt = false
 
       if (token === undefined) {
-        // 没直接给 token：优先弹引导。
+        // No token passed directly: prompt the binding guide first.
         const asked = await askForToken({
           userQuestions,
           agent: exec?.agent,
           signal: exec?.signal,
-          reason: '绑定 GitHub 账号需要你的 Personal Access Token。',
+          reason: 'Binding a GitHub account requires your Personal Access Token.',
         })
         if (asked.status === 'answered') {
           token = asked.token
           fromPrompt = true
         } else if (asked.status === 'unavailable') {
-          // 环境变量里的 token 也算一种绑定方式（只是不写盘）。
+          // A token in an environment variable also counts as a binding (it is simply not written to disk).
           const fromHost = context.host.envToken?.value
           const fromProcess = process.env[cfg.tokenEnv] ?? process.env.GITHUB_TOKEN
           const envToken = typeof fromHost === 'string' && fromHost !== '' ? fromHost : fromProcess
@@ -841,18 +851,18 @@ export function buildToolSpecs(context) {
           } else {
             throw fail(
               `${asked.detail}\n`
-              + '请改用：把 token 传给 gh_account action=bind 的 token 参数；'
-              + '或自己在 $DSH_HOME/.credentials.yaml 的 refs: 段写入 '
-              + `${cfg.tokenRef}；或设置环境变量 ${cfg.tokenEnv}。`,
+              + 'Instead: pass the token to gh_account action=bind through the token parameter; '
+              + 'or write '
+              + `${cfg.tokenRef} yourself into the refs: section of $DSH_HOME/.credentials.yaml; or set the environment variable ${cfg.tokenEnv}.`,
             )
           }
         } else {
-          throw fail('已取消绑定。需要时再调用 gh_account action=bind。')
+          throw fail('Binding cancelled. Call gh_account action=bind again when you need it.')
         }
       }
 
       const bound = await accounts.bind(token, {
-        source: fromPrompt ? 'gh_account bind（对话输入）' : 'gh_account bind（token 参数）',
+        source: fromPrompt ? 'gh_account bind (entered in conversation)' : 'gh_account bind (token parameter)',
       })
       return pruneUndefined({
         ok: true,
@@ -860,16 +870,16 @@ export function buildToolSpecs(context) {
         backend: accounts.backend,
         active: bound.id,
         account: accountView(bound, bound.id),
-        note: `已绑定并设为默认账号 @${bound.login}。之后所有 gh_* 调用默认使用这个账号。`,
+        note: `Bound and set as the default account @${bound.login}. All later gh_* calls use this account by default.`,
         security_note: fromPrompt
-          ? 'token 是通过对话输入的，因此它出现在本次会话记录里。若不希望如此，可改从凭据文件或环境变量提供，并删除当前绑定再重新绑定。'
+          ? 'The token was entered through the conversation, so it appears in this session transcript. If you do not want that, provide it from a credentials file or an environment variable instead, then remove the current binding and bind again.'
           : undefined,
       })
     }
 
     if (args.action === 'use') {
       if (typeof args.login !== 'string' || args.login.trim() === '') {
-        throw fail('action=use 需要 login 参数（登录名或账号 id）。')
+        throw fail('action=use requires the login parameter (a login name or account id).')
       }
       const record = await accounts.use(args.login)
       return pruneUndefined({
@@ -878,13 +888,13 @@ export function buildToolSpecs(context) {
         backend: accounts.backend,
         active: record.id,
         account: accountView(record, record.id),
-        note: `已把默认账号切换为 @${record.login}。`,
+        note: `Default account switched to @${record.login}.`,
       })
     }
 
     if (args.action === 'remove') {
       if (typeof args.login !== 'string' || args.login.trim() === '') {
-        throw fail('action=remove 需要 login 参数（登录名或账号 id）。')
+        throw fail('action=remove requires the login parameter (a login name or account id).')
       }
       const removed = await accounts.remove(args.login)
       const activeId = await accounts.activeId()
@@ -895,12 +905,12 @@ export function buildToolSpecs(context) {
         removed: removed.id,
         active: activeId,
         note: removed.wasActive
-          ? '已删除该账号；它原本是默认账号，现在需要在下次需要凭据时重新指定或绑定。'
-          : '已删除该账号。',
+          ? 'Account removed; it was the default account, so another one must be specified or bound the next time credentials are needed.'
+          : 'Account removed.',
       })
     }
 
-    // 默认 action=status
+    // Default action=status
     const current = await tokenFacts(context, cfg, cfg.workspaceRoot)
     const activeRecord = await accounts.active()
     const all = await accounts.list()
@@ -917,7 +927,7 @@ export function buildToolSpecs(context) {
             scopes: who.headers['x-oauth-scopes'],
             rate_remaining: who.rateLimit?.remaining,
           })
-        : { ok: false, error: who.error ?? '请求失败' }
+        : { ok: false, error: who.error ?? 'request failed' }
     }
     return pruneUndefined({
       ok: true,
@@ -931,8 +941,8 @@ export function buildToolSpecs(context) {
       identity,
       accounts: all.map(record => accountView(record, activeId)),
       hint: all.length === 0
-        ? '还没有绑定账号。用 gh_account action=bind 绑定，或直接在 $DSH_HOME/.credentials.yaml 写入 token。'
-        : `当前默认账号：${describeAccount(activeRecord)}`,
+        ? 'No account is bound yet. Bind one with gh_account action=bind, or write a token directly into $DSH_HOME/.credentials.yaml.'
+        : `Current default account: ${describeAccount(activeRecord)}`,
     })
   }
 
@@ -941,15 +951,16 @@ export function buildToolSpecs(context) {
   const apiTool = async (args, exec) => {
     const method = String(args.method ?? 'GET').toUpperCase()
     if (!ALLOWED_METHODS.has(method)) {
-      throw fail(`不支持的 method "${args.method}"。可用：${[...ALLOWED_METHODS].join(', ')}。`)
+      throw fail(`Unsupported method "${args.method}". Available: ${[...ALLOWED_METHODS].join(', ')}.`)
     }
     if (typeof args.endpoint !== 'string' || args.endpoint.trim() === '') {
-      throw fail('endpoint 必填：以 / 开头的 GitHub API 路径，例如 /repos/owner/repo/pulls。')
+      throw fail('endpoint is required: a GitHub API path starting with /, for example /repos/owner/repo/pulls.')
     }
 
     const isWrite = method !== 'GET' && method !== 'HEAD'
-    // 授权针对「请求实际会打到哪个仓库」：用规范化后的路径判定，而不是原始字符串
-    // （否则 `..` 能骗过授权，请求却打到另一个仓库）。
+    // Authorization targets "which repository the request will actually hit": decide from
+    // the normalized path, not the raw string (otherwise `..` can fool authorization while
+    // the request lands on a different repository).
     const parsed = parseEndpoint(args.endpoint)
     const targetFromEndpoint = parsed.repo
     const declared = typeof args.repo === 'string' && args.repo.trim() !== '' ? args.repo.trim() : undefined
@@ -957,8 +968,8 @@ export function buildToolSpecs(context) {
     if (targetFromEndpoint !== undefined && declaredSlug !== undefined
       && declaredSlug.toLowerCase() !== targetFromEndpoint.toLowerCase()) {
       throw fail(
-        `repo 参数（${declaredSlug}）与 endpoint 指向的仓库（${targetFromEndpoint}）不一致，拒绝执行。`
-        + '请让两者指向同一个仓库，或只保留其中一个。',
+        `The repo parameter (${declaredSlug}) and the repository the endpoint points at (${targetFromEndpoint}) do not match; refusing to run.`
+        + ' Make both point at the same repository, or keep only one of them.',
       )
     }
     const effective = targetFromEndpoint ?? declaredSlug
@@ -967,32 +978,33 @@ export function buildToolSpecs(context) {
 
     if (isWrite) {
       if (!cfg.allowApiWrite) {
-        throw fail(`写操作（${method}）被拒绝：配置 allowApiWrite 为 false。只读查询无需该开关。`)
+        throw fail(`Write operation (${method}) refused: allowApiWrite is configured as false. Read-only queries do not need that switch.`)
       }
       if (effective === undefined) {
         throw fail(
-          `写操作（${method}）无法确定目标仓库，拒绝执行。`
-          + '请把 endpoint 写成 /repos/{owner}/{repo}/… 形式，或提供 repo 参数（owner/repo）。',
+          `A write operation (${method}) cannot determine the target repository; refusing to run.`
+          + ' Write the endpoint as /repos/{owner}/{repo}/… or provide the repo parameter (owner/repo).',
         )
       }
       if (!repoAllowed(cfg, effective)) {
-        throw fail(`目标仓库 ${effective} 不在 allowRepos 白名单内，拒绝 ${method} ${args.endpoint}。`)
+        throw fail(`Target repository ${effective} is not in the allowRepos allowlist; refusing ${method} ${args.endpoint}.`)
       }
     } else if (effective !== undefined) {
-      // 只读同样受白名单约束：一旦设置了 allowRepos，就不该能读到白名单外的仓库。
+      // Reads are bound by the allowlist as well: once allowRepos is set, repositories outside it must not be readable.
       if (!cfg.allowApiReadOutsideAllowlist && !repoAllowed(cfg, effective)) {
-        throw fail(`目标仓库 ${effective} 不在 allowRepos 白名单内，拒绝 ${method} ${args.endpoint}。`)
+        throw fail(`Target repository ${effective} is not in the allowRepos allowlist; refusing ${method} ${args.endpoint}.`)
       }
     } else if (allowlistActive && repoScoped && !cfg.allowApiReadOutsideAllowlist) {
-      // 白名单生效、但 endpoint 属于「可能触及仓库内容」的前缀却无法确定仓库
-      // （例如 /search/code、/user/repos）——不能因为解析不出 slug 就默许放行。
+      // The allowlist is in effect, but the endpoint uses a prefix that may touch repository
+      // content while the repository cannot be determined (e.g. /search/code, /user/repos) —
+      // failing to parse a slug is no reason to silently allow it.
       throw fail(
-        `无法从 ${method} ${args.endpoint} 判断目标仓库，而 allowRepos 白名单已生效，拒绝执行。`
-        + '请改用 /repos/{owner}/{repo}/… 形式的 endpoint，或在配置里设置 allowApiReadOutsideAllowlist: true。',
+        `Cannot tell the target repository from ${method} ${args.endpoint} while the allowRepos allowlist is in effect; refusing to run.`
+        + ' Use an endpoint of the form /repos/{owner}/{repo}/…, or set allowApiReadOutsideAllowlist: true in the configuration.',
       )
     }
 
-    // query / body 用 JSON 字符串传，避免依赖参数 DSL 的嵌套对象支持。
+    // query / body are passed as JSON strings, to avoid depending on nested-object support in the parameter DSL.
     const query = parseJsonArg(args.query, 'query', 'object')
     const body = parseJsonArg(args.body, 'body', 'object')
 
@@ -1004,7 +1016,7 @@ export function buildToolSpecs(context) {
       query,
       signal: exec.signal,
     })
-    if (!response.ok) throw fail(response.error ?? `请求失败（HTTP ${response.status}）`)
+    if (!response.ok) throw fail(response.error ?? `request failed (HTTP ${response.status})`)
     const payload = response.json ?? response.text
     const serialized = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)
     return {
@@ -1023,30 +1035,30 @@ export function buildToolSpecs(context) {
     repo: {
       name: 'gh_repo',
       description: [
-        '在本地工作区里操作 GitHub 仓库：clone / fetch / status / diff / log / branches / create（创建远端仓库）。',
-        '这是使用其它 gh_* 工具的第一步：先用 action="clone" 把 owner/repo 拉到工作区，之后的 gh_file / gh_commit / gh_push 都按 owner/repo 定位同一个本地目录。',
-        '只读动作用这个工具即可；推送到远端请用 gh_push（需要插件配置 allowPush: true）。',
+        'Operate on GitHub repositories in the local workspace: clone / fetch / status / diff / log / branches / create (create a remote repository).',
+        'This is the first step for using the other gh_* tools: run action="clone" to pull owner/repo into the workspace, after which gh_file / gh_commit / gh_push all resolve the same local directory by owner/repo.',
+        'Read-only operations can use just this tool; to push to the remote use gh_push (requires the plugin config allowPush: true).',
       ].join(' '),
       parameters: {
-        repo: { type: 'string', required: true, description: '仓库标识，owner/repo 形式，例如 deepseek-ai/deepseek-harness（也接受完整 URL）。' },
+        repo: { type: 'string', required: true, description: 'Repository identifier in owner/repo form, for example deepseek-ai/deepseek-harness (a full URL is also accepted).' },
         action: {
           type: 'string',
           required: true,
-          description: '要执行的动作：clone（克隆或 fetch 已存在克隆）、status（工作区状态与当前提交）、diff（未提交差异）、log（提交历史）、branches（分支）、create（在 GitHub 上新建仓库）。',
+          description: 'The action to perform: clone (clone, or fetch an existing clone), status (working tree state and current commit), diff (uncommitted changes), log (commit history), branches (branches), create (create a new repository on GitHub).',
         },
-        depth: { type: 'integer', description: 'clone/fetch 的浅克隆深度，例如 1。省略为完整克隆。' },
-        staged: { type: 'boolean', description: 'action=diff 时只看已暂存的改动。' },
-        file: { type: 'string', description: 'action=diff/log 时限定到某个文件（仓库内相对路径）。' },
-        limit: { type: 'integer', description: 'action=log 返回的提交条数，默认 20，范围 1–200。' },
-        name: { type: 'string', description: 'action=create 时的新仓库名。' },
-        owner: { type: 'string', description: 'action=create 时创建到某个组织下（省略则创建到当前登录用户账号下）。' },
-        description: { type: 'string', description: 'action=create 时的仓库描述。' },
-        private: { type: 'boolean', description: 'action=create 时是否创建为私有仓库（默认 false）。' },
+        depth: { type: 'integer', description: 'Shallow clone depth for clone/fetch, for example 1. Omit for a full clone.' },
+        staged: { type: 'boolean', description: 'For action=diff, look only at staged changes.' },
+        file: { type: 'string', description: 'For action=diff/log, restrict to one file (path relative to the repository root).' },
+        limit: { type: 'integer', description: 'For action=log, how many commits to return; default 20, range 1–200.' },
+        name: { type: 'string', description: 'For action=create, the new repository name.' },
+        owner: { type: 'string', description: 'For action=create, create under this organization (omit to create under the currently signed-in user account).' },
+        description: { type: 'string', description: 'For action=create, the repository description.' },
+        private: { type: 'boolean', description: 'For action=create, whether to create a private repository (default false).' },
       },
       async execute(args, exec) {
         const handler = repoAction[args.action]
         if (!handler) {
-          throw fail(`不支持的 action "${args.action}"。可用：${Object.keys(repoAction).join(', ')}。`)
+          throw fail(`Unsupported action "${args.action}". Available: ${Object.keys(repoAction).join(', ')}.`)
         }
         return handler(args, exec)
       },
@@ -1055,29 +1067,29 @@ export function buildToolSpecs(context) {
     file: {
       name: 'gh_file',
       description: [
-        '读写本地克隆里的文件（路径相对仓库根目录）。action=get 返回带行号的窗口，action=list 列目录，',
-        'action=put 整份写入，action=edit 做一次性精确替换（oldText 必须在文件里唯一出现）。',
-        '修改后不会自动提交：请用 gh_commit 提交。',
+        'Read and write files in the local clone (paths are relative to the repository root). action=get returns a line-numbered window, action=list lists a directory,',
+        'action=put writes the whole file, action=edit performs a one-shot exact replacement (oldText must appear exactly once in the file).',
+        'Changes are not committed automatically: use gh_commit to commit them.',
       ].join(' '),
       parameters: {
-        repo: { type: 'string', required: true, description: 'owner/repo 形式，必须是已克隆到工作区的仓库。' },
-        action: { type: 'string', required: true, description: 'get（读文件）、list（列目录）、put（整份写入/新建）、edit（精确替换）。' },
-        path: { type: 'string', description: '仓库内相对路径。get/list/put/edit 都必填（list 省略则列仓库根目录）。' },
-        startLine: { type: 'integer', description: 'action=get 的起始行（1 起），默认 1。' },
-        endLine: { type: 'integer', description: 'action=get 的结束行（含）。省略则从 startLine 起返回最多 400 行。' },
-        content: { type: 'string', description: 'action=put 的完整文件内容。' },
-        overwrite: { type: 'boolean', description: 'action=put 覆盖已存在文件时必须显式设为 true。' },
-        oldText: { type: 'string', description: 'action=edit 要被替换的原文，必须与文件完全一致（含缩进）。' },
-        newText: { type: 'string', description: 'action=edit 的替换文本，空字符串表示删除。' },
-        count: { type: 'integer', description: 'action=edit 期望 oldText 出现的次数，默认 1；不匹配则拒绝修改。' },
+        repo: { type: 'string', required: true, description: 'owner/repo form; must be a repository already cloned into the workspace.' },
+        action: { type: 'string', required: true, description: 'get (read a file), list (list a directory), put (write/create the whole file), edit (exact replacement).' },
+        path: { type: 'string', description: 'Path relative to the repository root. Required for get/list/put/edit (for list, omitting it lists the repository root).' },
+        startLine: { type: 'integer', description: 'For action=get, the first line (1-based); default 1.' },
+        endLine: { type: 'integer', description: 'For action=get, the last line (inclusive). If omitted, up to 400 lines are returned starting at startLine.' },
+        content: { type: 'string', description: 'For action=put, the complete file content.' },
+        overwrite: { type: 'boolean', description: 'For action=put, must be set to true explicitly to overwrite an existing file.' },
+        oldText: { type: 'string', description: 'For action=edit, the exact original text to replace; must match the file exactly (including indentation).' },
+        newText: { type: 'string', description: 'For action=edit, the replacement text; an empty string means delete.' },
+        count: { type: 'integer', description: 'For action=edit, how many times oldText is expected to appear; default 1. The edit is refused if it does not match.' },
       },
       async execute(args, exec) {
         if (args.action !== 'list' && (typeof args.path !== 'string' || args.path === '')) {
-          throw fail(`action=${args.action} 需要 path 参数（仓库内相对路径）。`)
+          throw fail(`action=${args.action} requires the path parameter (a path relative to the repository root).`)
         }
         const handler = fileAction[args.action]
         if (!handler) {
-          throw fail(`不支持的 action "${args.action}"。可用：${Object.keys(fileAction).join(', ')}。`)
+          throw fail(`Unsupported action "${args.action}". Available: ${Object.keys(fileAction).join(', ')}.`)
         }
         return handler(args, exec)
       },
@@ -1086,21 +1098,21 @@ export function buildToolSpecs(context) {
     commit: {
       name: 'gh_commit',
       description: [
-        '在本地克隆里暂存改动并提交（默认只提交到本地）。paths 省略时提交全部改动。',
-        '把 push 设为 true 可在同一步里提交并推送（需要插件配置 allowPush: true）。',
-        '提交信息请写清楚“为什么改”，不要只写“update”。',
+        'Stage changes in the local clone and commit them (by default the commit stays local). If paths is omitted, all changes are committed.',
+        'Set push to true to commit and push in the same step (requires the plugin config allowPush: true).',
+        'Write the commit message so it explains "why the change was made"; do not just write "update".',
       ].join(' '),
       parameters: {
-        repo: { type: 'string', required: true, description: 'owner/repo 形式。' },
-        message: { type: 'string', required: true, description: '提交信息（建议一行主题 + 空行 + 说明）。' },
+        repo: { type: 'string', required: true, description: 'owner/repo form.' },
+        message: { type: 'string', required: true, description: 'Commit message (a one-line subject + blank line + explanation is recommended).' },
         paths: {
           type: 'array',
           items: { type: 'string' },
-          description: '要提交的路径列表（仓库内相对路径）。省略或空数组表示全部改动。',
+          description: 'List of paths to commit (paths relative to the repository root). Omitted or an empty array means all changes.',
         },
-        push: { type: 'boolean', description: '提交后是否立即推送（需要 allowPush: true）。默认 false。' },
-        authorName: { type: 'string', description: '覆盖本次提交的作者名（省略用插件配置或 git 全局配置）。' },
-        authorEmail: { type: 'string', description: '覆盖本次提交的作者邮箱。' },
+        push: { type: 'boolean', description: 'Whether to push immediately after committing (requires allowPush: true). Default false.' },
+        authorName: { type: 'string', description: 'Override the author name for this commit (otherwise the plugin config or the git global config is used).' },
+        authorEmail: { type: 'string', description: 'Override the author email for this commit.' },
       },
       execute: commitTool,
     },
@@ -1108,23 +1120,23 @@ export function buildToolSpecs(context) {
     push: {
       name: 'gh_push',
       description: [
-        '把本地提交推送到 origin。需要插件配置 allowPush: true，且 token 具备仓库写权限。',
-        '推送前建议先 gh_repo action=status 确认要推的内容；远端有新提交时先 gh_pull。',
+        'Push local commits to origin. Requires the plugin config allowPush: true, and a token with write access to the repository.',
+        'Before pushing, it is recommended to confirm what will be pushed with gh_repo action=status; if the remote has new commits, run gh_pull first.',
       ].join(' '),
       parameters: {
-        repo: { type: 'string', required: true, description: 'owner/repo 形式。' },
-        branch: { type: 'string', description: '要推送到的远端分支名。省略表示当前分支推到同名远端分支。' },
-        force: { type: 'boolean', description: '是否强推（仅 --force-with-lease，且需要 allowForcePush: true）。默认 false。' },
+        repo: { type: 'string', required: true, description: 'owner/repo form.' },
+        branch: { type: 'string', description: 'Name of the remote branch to push to. Omit to push the current branch to the same-named remote branch.' },
+        force: { type: 'boolean', description: 'Whether to force push (only --force-with-lease, and requires allowForcePush: true). Default false.' },
       },
       execute: pushTool,
     },
 
     pull: {
       name: 'gh_pull',
-      description: '把远端改动拉到本地克隆。默认 --ff-only（分叉时明确失败而不是制造合并冲突），rebase: true 时改用 --rebase。',
+      description: 'Pull remote changes into the local clone. Defaults to --ff-only (a diverged branch fails clearly instead of manufacturing a merge conflict); with rebase: true it uses --rebase instead.',
       parameters: {
-        repo: { type: 'string', required: true, description: 'owner/repo 形式。' },
-        rebase: { type: 'boolean', description: '用 --rebase 代替 --ff-only。默认 false。' },
+        repo: { type: 'string', required: true, description: 'owner/repo form.' },
+        rebase: { type: 'boolean', description: 'Use --rebase instead of --ff-only. Default false.' },
       },
       execute: pullTool,
     },
@@ -1132,15 +1144,15 @@ export function buildToolSpecs(context) {
     account: {
       name: 'gh_account',
       description: [
-        'GitHub 账号绑定管理。action=list 列出已绑定账号与当前默认账号；action=bind 绑定一个新账号（',
-        '不传 token 时会弹出输入框让你粘贴 PAT，绑定后自动设为默认）；action=use 切换默认账号；',
-        'action=remove 删除账号；action=status 查看当前生效的凭据来源与对应账号（不显示 token）。',
-        '首次需要凭据时会自动弹出绑定引导；之后所有 gh_* 调用默认使用已绑定的账号。',
+        'GitHub account binding management. action=list lists bound accounts and the current default account; action=bind binds a new account (',
+        'when no token is passed an input box appears for pasting a PAT, and the account becomes the default once bound); action=use switches the default account;',
+        'action=remove deletes an account; action=status shows which credential source is currently in effect and which account it maps to (the token itself is not shown).',
+        'The first time credentials are needed, the binding guide appears automatically; after that all gh_* calls use the bound account by default.',
       ].join(' '),
       parameters: {
-        action: { type: 'string', required: true, description: 'bind（绑定）、list（列表）、use（切换）、remove（删除）、status（状态）。' },
-        token: { type: 'string', description: 'action=bind 时的 PAT；省略则弹出输入框让用户粘贴。' },
-        login: { type: 'string', description: 'action=use / action=remove 时的登录名或账号 id。' },
+        action: { type: 'string', required: true, description: 'bind (bind), list (list), use (switch), remove (delete), status (state).' },
+        token: { type: 'string', description: 'PAT for action=bind; if omitted, an input box appears for the user to paste it.' },
+        login: { type: 'string', description: 'Login name or account id for action=use / action=remove.' },
       },
       execute: accountTool,
     },
@@ -1148,13 +1160,13 @@ export function buildToolSpecs(context) {
     config: {
       name: 'gh_config',
       description: [
-        'GitHub 访问配置：action=status 查看 token 是否已配置、来自哪一层、对应哪个 GitHub 账号（不显示 token 本身）；',
-        'action=set 把 PAT 存入 DSH 凭据服务；action=unset 删除。',
-        '当 gh_* 报 401 或提示未配置凭据时，先让用户提供 PAT 再调用 action=set。',
+        'GitHub access configuration: action=status shows whether a token is configured, which layer it comes from, and which GitHub account it maps to (the token itself is not shown);',
+        'action=set stores a PAT in the DSH credentials service; action=unset deletes it.',
+        'When a gh_* call reports 401 or says no credentials are configured, have the user provide a PAT first and then call action=set.',
       ].join(' '),
       parameters: {
-        action: { type: 'string', required: true, description: 'status（默认）、set（写入 token）、unset（删除 token）。' },
-        token: { type: 'string', description: 'action=set 时的 GitHub Personal Access Token 明文。' },
+        action: { type: 'string', required: true, description: 'status (default), set (store a token), unset (delete the token).' },
+        token: { type: 'string', description: 'The plaintext GitHub Personal Access Token for action=set.' },
       },
       execute: async args => configTool(args),
     },
@@ -1162,17 +1174,17 @@ export function buildToolSpecs(context) {
     api: {
       name: 'gh_api',
       description: [
-        '直接调用 GitHub REST API（只允许 api.github.com），用于 issue、PR、Actions、搜索等 gh_* 工具未覆盖的场景。',
-        'GET/HEAD 为只读；POST/PATCH/PUT/DELETE 需要插件配置 allowApiWrite: true。',
-        '仓库白名单（allowRepos）按 endpoint 里的 /repos/{owner}/{repo} 判定；endpoint 没有该路径段时用 repo 参数补充。',
-        '结果以 JSON 返回并自动截断。',
+        'Call the GitHub REST API directly (only api.github.com is allowed), for scenarios the other gh_* tools do not cover: issues, PRs, Actions, search, and so on.',
+        'GET/HEAD are read-only; POST/PATCH/PUT/DELETE require the plugin config allowApiWrite: true.',
+        'The repository allowlist (allowRepos) is judged from /repos/{owner}/{repo} in the endpoint; when the endpoint has no such path segment, supply the repo parameter instead.',
+        'Results are returned as JSON and truncated automatically.',
       ].join(' '),
       parameters: {
-        endpoint: { type: 'string', required: true, description: '以 / 开头的 API 路径，例如 /repos/owner/repo/pulls（查询参数放 query 里）。' },
-        method: { type: 'string', description: 'GET（默认）、POST、PATCH、PUT、DELETE、HEAD。' },
-        repo: { type: 'string', description: 'owner/repo，用于白名单校验；若与 endpoint 里的仓库不一致会被拒绝。' },
-        query: { type: 'string', description: 'JSON 字符串形式的查询参数，例如 {"state":"open","per_page":20}。' },
-        body: { type: 'string', description: 'JSON 字符串形式的请求体，例如 {"title":"...","head":"feature","base":"main"}。' },
+        endpoint: { type: 'string', required: true, description: 'API path starting with /, for example /repos/owner/repo/pulls (put query parameters in query).' },
+        method: { type: 'string', description: 'GET (default), POST, PATCH, PUT, DELETE, HEAD.' },
+        repo: { type: 'string', description: 'owner/repo, used for allowlist validation; it is refused if it disagrees with the repository in the endpoint.' },
+        query: { type: 'string', description: 'Query parameters as a JSON string, for example {"state":"open","per_page":20}.' },
+        body: { type: 'string', description: 'Request body as a JSON string, for example {"title":"...","head":"feature","base":"main"}.' },
       },
       execute: apiTool,
     },

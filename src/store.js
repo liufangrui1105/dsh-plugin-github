@@ -1,45 +1,52 @@
 /**
- * dsh-plugin-github — GitHub 账号绑定存储
+ * dsh-plugin-github — GitHub account binding storage
  *
- * 目标：第一次需要凭据时引导用户绑定一个 GitHub 账号并记住；之后所有调用默认用这个账号。
+ * Goal: on the first time credentials are needed, guide the user to bind a GitHub
+ * account and remember it; every later call then uses that account by default.
  *
- * 两个后端，按可用性自动选择：
+ * Two backends, chosen automatically by availability:
  *
- *   1. `dsh-credentials`（首选）—— 用 DSH 官方凭据服务存 token。
- *      - 每个账号一条 record：key = `github-repo/account-<login>`，
+ *   1. `dsh-credentials` (preferred) — stores the token in the official DSH
+ *      credentials service.
+ *      - One record per account: key = `github-repo/account-<login>`,
  *        `{ kind: 'api-key', key: <PAT>, env: { GITHUB_LOGIN: <login> } }`
- *      - 当前账号指针：`github-repo/active`
- *      - record 的写入只能走 `modifyRecord`（官方唯一的写路径，带跨进程锁），
- *        `readRecord`/`listRecords`/`deleteRecord` 分别负责读、列举、删。
- *      - token 值不会被枚举出来：`listRecords()` 只返回 key 与 kind。
+ *      - Pointer to the current account: `github-repo/active`
+ *      - Records may only be written through `modifyRecord` (the official, sole
+ *        write path, which carries a cross-process lock); `readRecord`/
+ *        `listRecords`/`deleteRecord` handle reading, listing and deleting.
+ *      - Token values are never enumerable: `listRecords()` returns only key and
+ *        kind.
  *
- *   2. JSON 文件（回退）—— `$DSH_HOME/github-accounts.json`。
- *      插件拥有的文件，用于宿主没有挂载凭据服务的场景（本机就是这种）。
- *      POSIX 上按 0600 写入；Windows 无对应语义，靠用户目录权限兜底。
+ *   2. JSON file (fallback) — `$DSH_HOME/github-accounts.json`.
+ *      A file owned by the plugin, for hosts that have not mounted a credentials
+ *      service (which is the case on this machine). Written with mode 0600 on
+ *      POSIX; Windows has no equivalent semantics, so the user directory's
+ *      permissions are the backstop there.
  *
- * 环境变量始终作为最后一层回退，不写入任何存储。
+ * Environment variables are always the last-resort fallback and are never written
+ * to any storage.
  *
- * 任何工具的返回值里都不会出现 token——`accountView()` 负责把内部记录投影成
- * 「可安全展示」的摘要。
+ * No tool ever returns the token — `accountView()` projects the internal record
+ * into a "safe to display" summary.
  */
 
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-/** store 里 record 的 scope 段（凭据 key 必须是 `<scope>/<id>`）。 */
+/** The scope segment of a record in the store (a credentials key must be `<scope>/<id>`). */
 const RECORD_SCOPE = 'github-repo'
 const ACTIVE_ID = 'active'
 
-/** 账号 id 必须匹配凭据 key 段的语法：小写字母开头的短横线标识。 */
+/** An account id must match the syntax of a credentials key segment: a hyphenated identifier starting with a lowercase letter. */
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/
 
-/** 环境变量名（POSIX 标识符）语法，用于校验 tokenRef。 */
+/** Environment variable name (POSIX identifier) syntax, used to validate tokenRef. */
 const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-/** 默认的凭据引用名。 */
+/** The default credentials reference name. */
 export const DEFAULT_TOKEN_REF = 'GITHUB_TOKEN'
 
-/** 把登录名转成合法的 record id。 */
+/** Turn a login name into a valid record id. */
 export function accountIdFor(login) {
   const id = String(login ?? '')
     .trim()
@@ -47,17 +54,17 @@ export function accountIdFor(login) {
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '')
   if (id === '' || !ID_PATTERN.test(id)) {
-    throw new Error(`无法从登录名 "${login}" 生成合法的账号 id（只允许小写字母、数字、短横线）。`)
+    throw new Error(`Cannot derive a valid account id from login name "${login}" (only lowercase letters, digits and hyphens are allowed).`)
   }
   return id
 }
 
-/** record id → 凭据 key。 */
+/** record id → credentials key. */
 function recordKeyFor(id) {
   return `${RECORD_SCOPE}/${id}`
 }
 
-/** 解析 `<scope>/<id>` 形式的凭据 key。 */
+/** Parse a credentials key of the form `<scope>/<id>`. */
 function parseRecordKey(key) {
   const value = String(key ?? '')
   const slash = value.indexOf('/')
@@ -69,19 +76,19 @@ function parseRecordKey(key) {
 }
 
 /**
- * 内部账号记录。
+ * Internal account record.
  * @typedef {object} AccountRecord
- * @property {string} id 稳定的账号 id（= 登录名规范化的结果）
- * @property {string} login GitHub 登录名
+ * @property {string} id stable account id (= the normalized login name)
+ * @property {string} login GitHub login name
  * @property {string} token PAT
- * @property {string} [name] 显示名（GitHub 的 name 字段）
- * @property {string} [scopes] token 的权限范围（x-oauth-scopes 响应头）
- * @property {string} [source] 这个账号是从哪里来的（供展示）
- * @property {string} [boundAt] 绑定时间（ISO 字符串）
+ * @property {string} [name] display name (GitHub's name field)
+ * @property {string} [scopes] token permission scopes (x-oauth-scopes response header)
+ * @property {string} [source] where this account came from (for display)
+ * @property {string} [boundAt] binding time (ISO string)
  */
 
 /**
- * 面向模型/用户的账号视图：**不含 token**。
+ * The model/user-facing account view: **without the token**.
  * @param {AccountRecord} record
  * @param {string | undefined} activeId
  */
@@ -97,20 +104,22 @@ export function accountView(record, activeId) {
   }
 }
 
-/* ------------------------------------------------------------------ 后端 1：DSH 凭据服务 */
+/* ------------------------------------------------------------------ backend 1: DSH credentials service */
 
 /**
- * 基于 `ctx.credentials` 的存储。
+ * Storage backed by `ctx.credentials`.
  *
- * 只用服务上真实存在的成员，并且每一步都做能力检测——凭据服务在不同 DSH
- * 版本/组合下的实现并不一致，缺一个方法就应该干净地回退，而不是抛错。
+ * It only uses members that actually exist on the service, and probes capabilities
+ * at every step — the credentials service is not implemented consistently across
+ * DSH versions/combinations, so a missing method should fall back cleanly instead
+ * of throwing.
  * @param {any} provider
  */
 export function createCredentialsStore(provider) {
   const can = name => provider && typeof provider[name] === 'function'
   if (!can('listRecords') || !can('readRecord')) return undefined
 
-  /** 读一条 record 并还原成 AccountRecord。 */
+  /** Read one record and restore it into an AccountRecord. */
   const readAt = async id => {
     const record = await provider.readRecord(recordKeyFor(id))
     if (record === undefined || record === null) return undefined
@@ -152,7 +161,7 @@ export function createCredentialsStore(provider) {
     },
 
     async setActive(id) {
-      if (!can('modifyRecord')) throw new Error('凭据服务不支持 modifyRecord，无法记录当前账号。')
+      if (!can('modifyRecord')) throw new Error('The credentials service does not support modifyRecord, so the current account cannot be recorded.')
       await provider.modifyRecord(recordKeyFor(ACTIVE_ID), async () => ({
         kind: 'api-key',
         env: { ACTIVE: id },
@@ -164,7 +173,7 @@ export function createCredentialsStore(provider) {
      */
     async save(record) {
       if (!can('modifyRecord')) {
-        throw new Error('凭据服务不支持 modifyRecord，无法保存账号。')
+        throw new Error('The credentials service does not support modifyRecord, so the account cannot be saved.')
       }
       await provider.modifyRecord(recordKeyFor(record.id), async () => ({
         kind: 'api-key',
@@ -180,16 +189,16 @@ export function createCredentialsStore(provider) {
     },
 
     async remove(id) {
-      if (!can('deleteRecord')) throw new Error('凭据服务不支持 deleteRecord，无法删除账号。')
+      if (!can('deleteRecord')) throw new Error('The credentials service does not support deleteRecord, so the account cannot be deleted.')
       await provider.deleteRecord(recordKeyFor(id))
     },
   }
 }
 
-/* ------------------------------------------------------------------ 后端 2：JSON 文件 */
+/* ------------------------------------------------------------------ backend 2: JSON file */
 
 /**
- * 插件自有的 JSON 文件存储。
+ * The plugin's own JSON file storage.
  * @param {string} file
  */
 export function createFileStore(file) {
@@ -206,7 +215,8 @@ export function createFileStore(file) {
         accounts: Array.isArray(parsed?.accounts) ? parsed.accounts.filter(isAccountRecord) : [],
       }
     } catch {
-      // 文件不存在或损坏：当作空存储。损坏时不覆盖用户内容——只有写入时才落盘。
+      // The file is missing or corrupt: treat it as empty storage. Do not overwrite
+      // the user's content when it is corrupt — we only write to disk on an actual write.
       cache = { version: 1, accounts: [] }
     }
     return cache
@@ -270,10 +280,10 @@ function isAccountRecord(value) {
     && typeof value.token === 'string'
 }
 
-/* ------------------------------------------------------------------ 选择后端 */
+/* ------------------------------------------------------------------ backend selection */
 
 /**
- * 选择可用的存储后端。
+ * Select an available storage backend.
  * @param {{credentials?: unknown, dshHome?: string, file?: string}} options
  * @returns {{store: any, reason: string}}
  */
@@ -285,11 +295,11 @@ export function selectStore(options) {
   const file = options.file ?? path.join(options.dshHome ?? '.', 'github-accounts.json')
   return {
     store: createFileStore(file),
-    reason: `file:${file}（DSH 凭据服务未挂载，改用插件自有的账号文件）`,
+    reason: `file:${file} (the DSH credentials service is not mounted, so the plugin's own account file is used instead)`,
   }
 }
 
-/* ------------------------------------------------------------------ 账号管理 */
+/* ------------------------------------------------------------------ account management */
 
 /**
  * @typedef {object} AccountManager
@@ -303,7 +313,7 @@ export function selectStore(options) {
  */
 
 /**
- * 造一个账号管理器。
+ * Build an account manager.
  *
  * @param {{
  *   store: any,
@@ -323,14 +333,17 @@ export function createAccountManager(options) {
   }
 
   /**
-   * 当前生效的账号。
+   * The currently effective account.
    *
-   * 只有**真正绑定过的账号**才会在这里返回。环境变量里的 token 刻意不算「已绑定」：
-   * 用户绑定了一个账号，就应该默认用那个账号，而不是被环境里恰好存在的
-   * GITHUB_TOKEN 盖掉。环境变量只在「一个账号都没绑」时作为最后一层回退出现，
-   * 那时 gh_account status 会把来源标成 env:…，引导文案也据此判断是否该弹窗。
+   * Only **accounts that were actually bound** are ever returned here. A token from
+   * an environment variable deliberately does not count as "bound": once the user
+   * binds an account, that account should be used by default rather than being
+   * shadowed by a GITHUB_TOKEN that happens to exist in the environment. Environment
+   * variables only surface as a last-resort fallback when **no account at all is
+   * bound**; in that case gh_account status marks the source as env:…, and the
+   * onboarding text uses that to decide whether a binding prompt should be shown.
    *
-   * @param {{allowEnvToken?: boolean}} [options] allowEnvToken=false 时忽略环境变量回退
+   * @param {{allowEnvToken?: boolean}} [options] when allowEnvToken=false, ignore the environment-variable fallback
    */
   const activeRecord = async (options = {}) => {
     const id = await store.activeId()
@@ -339,7 +352,7 @@ export function createAccountManager(options) {
       if (record !== undefined) return record
     }
     const all = await store.list()
-    // 没有指针但只有一个绑定账号 → 直接用它，避免每次都要显式 use。
+    // No pointer but exactly one bound account → use it directly, so an explicit use is not needed every time.
     if (all.length === 1) return all[0]
     if (all.length === 0 && options.allowEnvToken !== false
       && envToken !== undefined && envToken.value !== '') {
@@ -354,7 +367,8 @@ export function createAccountManager(options) {
           source: `env:${envToken.name}`,
         }
       } catch {
-        // 环境变量里的 token 无效：不要让整个插件不可用，交给调用方按「未绑定」处理。
+        // The token in the environment variable is invalid: do not make the whole plugin
+        // unusable, let the caller treat this as "not bound".
         return undefined
       }
     }
@@ -373,7 +387,7 @@ export function createAccountManager(options) {
       return await activeRecord(options)
     },
 
-    /** 只统计「真正绑定过」的账号（不含环境变量回退）。 */
+    /** Count only accounts that were **actually bound** (excluding the environment-variable fallback). */
     async boundCount() {
       return (await store.list()).length
     },
@@ -385,13 +399,13 @@ export function createAccountManager(options) {
     },
 
     /**
-     * 绑定一个 token：先向 GitHub 确认身份，成功后才落盘。
+     * Bind a token: confirm the identity with GitHub first, and only write to disk after that succeeds.
      * @param {string} token
      * @param {{source?: string}} [meta]
      */
     async bind(token, meta = {}) {
       const value = String(token ?? '').trim()
-      if (value === '') throw new Error('token 不能为空。')
+      if (value === '') throw new Error('The token must not be empty.')
       const identity = await lookupIdentity(value)
       /** @type {AccountRecord} */
       const record = {
@@ -409,7 +423,7 @@ export function createAccountManager(options) {
     },
 
     /**
-     * 切换当前账号。
+     * Switch the current account.
      * @param {string} idOrLogin
      */
     async use(idOrLogin) {
@@ -418,8 +432,8 @@ export function createAccountManager(options) {
         const all = await store.list()
         const known = all.map(account => account.login).join(', ')
         throw new Error(
-          `找不到账号 "${idOrLogin}"。`
-          + (known === '' ? '当前还没有绑定任何账号，请先用 action=bind 绑定。' : `已绑定的账号：${known}。`),
+          `Account "${idOrLogin}" not found. `
+          + (known === '' ? 'No account is bound yet; bind one first with action=bind.' : `Bound accounts: ${known}.`),
         )
       }
       await store.setActive(record.id)
@@ -427,12 +441,12 @@ export function createAccountManager(options) {
     },
 
     /**
-     * 删除账号。
+     * Delete an account.
      * @param {string} idOrLogin
      */
     async remove(idOrLogin) {
       const record = await find(idOrLogin)
-      if (record === undefined) throw new Error(`找不到账号 "${idOrLogin}"，无需删除。`)
+      if (record === undefined) throw new Error(`Account "${idOrLogin}" not found, nothing to delete.`)
       const wasActive = (await store.activeId()) === record.id
       await store.remove(record.id)
       return { id: record.id, wasActive }
@@ -440,13 +454,13 @@ export function createAccountManager(options) {
   }
 }
 
-/** 供 index.js 校验 tokenRef 用。 */
+/** Used by index.js to validate tokenRef. */
 export function isValidTokenRef(value) {
   return REF_PATTERN.test(String(value ?? ''))
 }
 
-/** 当前账号的展示标签（不含 token）。 */
+/** Display label for the current account (without the token). */
 export function describeAccount(record) {
-  if (record === undefined) return '未绑定'
-  return `@${record.login}${record.source === undefined ? '' : `（来源 ${record.source}）`}`
+  if (record === undefined) return 'not bound'
+  return `@${record.login}${record.source === undefined ? '' : ` (source: ${record.source})`}`
 }

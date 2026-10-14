@@ -1,14 +1,16 @@
 /**
- * dsh-plugin-github — 凭据解析层
+ * dsh-plugin-github — credential resolution layer
  *
- * 解析顺序（第一个命中的胜出）：
- *   1. **已绑定的 GitHub 账号**（首选）—— 见 store.js。首次使用时通过 gh_account
- *      或自动引导绑定，之后所有调用默认用这个账号。
- *   2. DSH 凭据服务 ctx.credentials.resolve(ref) —— 兼容只写了一个 token、没走绑定流程的用户。
- *   3. 环境变量（config.tokenEnv / GITHUB_TOKEN / GH_TOKEN）
- *   4. 宿主工作区内的 .env.local / .env（仅当 config.dotenv = true）
+ * Resolution order (first hit wins):
+ *   1. **A bound GitHub account** (preferred) — see store.js. On first use it is bound through
+ *      gh_account or the automatic prompt, and every call afterwards uses that account by default.
+ *   2. The DSH credentials service ctx.credentials.resolve(ref) — for users who only ever stored a
+ *      bare token and never went through the binding flow.
+ *   3. Environment variables (config.tokenEnv / GITHUB_TOKEN / GH_TOKEN)
+ *   4. .env.local / .env inside the host workspace (only when config.dotenv = true)
  *
- * 任何一层都不会把 token 写进日志；工具结果里只出现来源标签与登录名。
+ * No layer ever writes the token into a log; tool results contain only the source label and the
+ * login name.
  */
 
 import { readFile } from 'node:fs/promises'
@@ -20,7 +22,7 @@ import { DEFAULT_TOKEN_REF, describeAccount, isValidTokenRef } from './store.js'
 /** @type {Map<string, string>} */
 const fileCache = new Map()
 
-/** 极简 .env 解析：支持 KEY=VALUE、export 前缀、# 注释、单双引号。 */
+/** Minimal .env parsing: supports KEY=VALUE, an export prefix, # comments and single/double quotes. */
 export function parseDotenv(text) {
   /** @type {Record<string, string>} */
   const out = {}
@@ -39,6 +41,7 @@ export function parseDotenv(text) {
     ) {
       value = value.slice(1, -1)
     }
+    // An empty value counts as absent, so a bare `KEY=` never looks like a stored credential.
     if (value !== '') out[key] = value
   }
   return out
@@ -57,10 +60,12 @@ async function readDotenvFile(file) {
 }
 
 /**
- * 解析用于访问 GitHub 的 token。
+ * Resolve the token used to access GitHub.
  *
- * 顺序：已绑定账号 → 环境变量形式的账号回退 → DSH 凭据服务里的裸 token → 环境变量 → .env。
- * 绑定账号永远优先，这样「绑定了谁就用谁」不会被环境里恰好存在的 GITHUB_TOKEN 盖掉。
+ * Order: bound account → environment-variable account fallback → bare token in the DSH credentials
+ * service → environment variables → .env.
+ * A bound account always takes precedence, so "use whichever account is bound" cannot be overridden
+ * by a GITHUB_TOKEN that happens to exist in the environment.
  *
  * @param {{
  *   accounts?: import('./store.js').AccountManager,
@@ -78,10 +83,12 @@ export async function resolveToken(context) {
   const tokenEnv = String(context.tokenEnv ?? 'GITHUB_TOKEN')
   const allowEnvToken = context.allowEnvToken !== false
 
-  // 1) 已绑定的账号（首选）
+  // 1) A bound account (preferred)
   if (context.accounts !== undefined) {
     try {
       const account = await context.accounts.active({ allowEnvToken })
+      // An empty stored token counts as absent: otherwise a blank record would look like a bound
+      // account and shadow the credentials service and environment fallbacks further down.
       if (account !== undefined && account.token !== '') {
         return {
           token: account.token,
@@ -90,17 +97,17 @@ export async function resolveToken(context) {
           login: account.login,
           account,
           ...(String(account.source ?? '').startsWith('env:') ? { viaEnvFallback: true } : {}),
-          detail: `已使用绑定的 GitHub 账号 ${describeAccount(account)}`,
+          detail: `Using the bound GitHub account ${describeAccount(account)}`,
         }
       }
     } catch (error) {
-      // 账号存储坏了不应该让整个插件不可用，继续往下回退。
+      // A broken account store must not take the whole plugin down; keep falling back.
       return await envFallback(context, ref, tokenEnv,
-        `读取已绑定账号失败：${error instanceof Error ? error.message : String(error)}`)
+        `Failed to read the bound account: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
-  // 2) DSH 凭据服务里的裸 token
+  // 2) A bare token in the DSH credentials service
   const provider = context.credentials
   if (provider && typeof provider.resolve === 'function') {
     try {
@@ -110,24 +117,24 @@ export async function resolveToken(context) {
           token: resolved.value,
           source: `dsh-credentials(${resolved.source ?? 'managed'})`,
           configured: true,
-          detail: `已从 DSH 凭据服务读取 ${ref}`,
+          detail: `Read ${ref} from the DSH credentials service`,
         }
       }
     } catch (error) {
       return await envFallback(context, ref, tokenEnv,
-        `凭据服务读取失败：${error instanceof Error ? error.message : String(error)}`)
+        `Credentials service read failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
   const reason = context.accounts !== undefined
-    ? '尚未绑定 GitHub 账号，凭据服务里也没有'
-    : (provider ? '凭据服务中未配置' : '凭据服务未挂载')
+    ? 'no GitHub account is bound and the credentials service has none either'
+    : (provider ? 'not configured in the credentials service' : 'the credentials service is not mounted')
   return await envFallback(context, ref, tokenEnv, reason)
 }
 
 async function envFallback(context, ref, tokenEnv, reason) {
   const env = process.env
-  // 去重后逐个尝试：tokenEnv、GITHUB_TOKEN、GH_TOKEN。
+  // Deduplicated, tried in order: tokenEnv, GITHUB_TOKEN, GH_TOKEN.
   const candidates = [...new Set([tokenEnv, 'GITHUB_TOKEN', 'GH_TOKEN', ref])]
   for (const name of candidates) {
     const value = env[name]
@@ -136,7 +143,7 @@ async function envFallback(context, ref, tokenEnv, reason) {
         token: value.trim(),
         source: `env:${name}`,
         configured: true,
-        detail: `已从环境变量 ${name} 读取（${reason}）`,
+        detail: `Read from the environment variable ${name} (${reason})`,
       }
     }
   }
@@ -151,7 +158,7 @@ async function envFallback(context, ref, tokenEnv, reason) {
             token: value,
             source: `${file}:${name}`,
             configured: true,
-            detail: `已从 ${file} 读取 ${name}（${reason}）`,
+            detail: `Read ${name} from ${file} (${reason})`,
           }
         }
       }
@@ -162,12 +169,12 @@ async function envFallback(context, ref, tokenEnv, reason) {
     token: undefined,
     source: 'none',
     configured: false,
-    detail: `${reason}；环境变量 ${candidates.join(' / ')} 均未设置`,
+    detail: `${reason}; none of the environment variables ${candidates.join(' / ')} is set`,
   }
 }
 
 /**
- * 只报告凭据状态，绝不返回值。
+ * Report the credential state only, never the value.
  * @param {Parameters<typeof resolveToken>[0] & {credentials?: any}} context
  */
 export async function describeToken(context) {
@@ -195,10 +202,10 @@ export async function describeToken(context) {
   }
 }
 
-/* ------------------------------------------------------------------ 写入：绑定账号 */
+/* ------------------------------------------------------------------ Writes: binding an account */
 
 /**
- * 把一个 token 绑定成账号（先校验身份，再落盘）。
+ * Bind a token as an account (verify the identity first, then persist).
  * @param {{accounts?: import('./store.js').AccountManager, credentials?: any, tokenRef?: string}} context
  * @param {string} token
  * @param {{source?: string}} [meta]
@@ -207,8 +214,8 @@ export async function bindAccount(context, token, meta) {
   if (context.accounts === undefined) {
     return {
       ok: false,
-      detail: '账号存储不可用，无法绑定。可改为设置环境变量 '
-        + `${isValidTokenRef(context.tokenRef) ? context.tokenRef : DEFAULT_TOKEN_REF}。`,
+      detail: 'Account storage is unavailable, so the account cannot be bound. Instead, set the environment variable '
+        + `${isValidTokenRef(context.tokenRef) ? context.tokenRef : DEFAULT_TOKEN_REF}.`,
     }
   }
   try {
@@ -216,7 +223,7 @@ export async function bindAccount(context, token, meta) {
     return {
       ok: true,
       account: record,
-      detail: `已绑定 GitHub 账号 @${record.login}，并设为当前默认账号。`,
+      detail: `Bound the GitHub account @${record.login} and set it as the current default.`,
     }
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) }
@@ -224,7 +231,8 @@ export async function bindAccount(context, token, meta) {
 }
 
 /**
- * 兼容旧接口：把 token 直接写进 DSH 凭据服务的引用。账号绑定可用时应走 bindAccount。
+ * Legacy interface: write the token straight into the DSH credentials reference. When account binding
+ * is available, go through bindAccount instead.
  * @param {{credentials?: {set?: (ref: string, value: string) => Promise<void>}, tokenRef?: string}} context
  * @param {string} token
  */
@@ -235,27 +243,27 @@ export async function storeToken(context, token) {
     return {
       ok: false,
       detail:
-        'DSH 凭据服务（ctx.credentials）当前不可用，无法写入 token。'
-        + `可改为设置环境变量 ${ref}（例如在启动 DSH 前 export，或写进 $DSH_HOME/.env）。`,
+        'The DSH credentials service (ctx.credentials) is currently unavailable, so the token cannot be written.'
+        + ` Instead, set the environment variable ${ref} (for example export it before starting DSH, or put it in $DSH_HOME/.env).`,
     }
   }
   if (typeof token !== 'string' || token.trim() === '') {
-    return { ok: false, detail: 'token 不能为空；要清除请用 gh_config 的 action=unset。' }
+    return { ok: false, detail: 'The token must not be empty; to clear it use gh_config action=unset.' }
   }
   await provider.set(ref, token.trim())
-  return { ok: true, detail: `已写入 DSH 凭据服务：${ref}（值不会出现在任何工具输出中）` }
+  return { ok: true, detail: `Written to the DSH credentials service: ${ref} (the value never appears in any tool output)` }
 }
 
 /**
- * 从 DSH 凭据服务删除裸 token。
+ * Delete the bare token from the DSH credentials service.
  * @param {{credentials?: {unset?: (ref: string) => Promise<void>}, tokenRef?: string}} context
  */
 export async function clearToken(context) {
   const ref = isValidTokenRef(context.tokenRef) ? String(context.tokenRef) : DEFAULT_TOKEN_REF
   const provider = context.credentials
   if (!provider || typeof provider.unset !== 'function') {
-    return { ok: false, detail: 'DSH 凭据服务不可用，无法删除 token。' }
+    return { ok: false, detail: 'The DSH credentials service is unavailable, so the token cannot be deleted.' }
   }
   await provider.unset(ref)
-  return { ok: true, detail: `已从 DSH 凭据服务删除：${ref}` }
+  return { ok: true, detail: `Deleted from the DSH credentials service: ${ref}` }
 }

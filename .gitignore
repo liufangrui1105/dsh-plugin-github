@@ -1,14 +1,14 @@
-# 依赖与构建产物
+# Dependencies and build output
 node_modules/
 *.tgz
 
-# 编辑器与系统
+# Editors and OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# 日志与临时文件
+# Logs and temporary files
 *.log
 *.tmp
 .github-accounts.json

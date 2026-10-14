@@ -1,7 +1,8 @@
-# 统一换行符：避免 Windows 的 core.autocrlf 产出整文件 CRLF 的假 diff。
+# Normalize line endings: without this, Windows core.autocrlf produces
+# whole-file CRLF diffs.
 * text=auto eol=lf
 
-# 二进制文件不要做换行转换
+# Never rewrite line endings in binary files.
 *.png binary
 *.jpg binary
 *.ico binary

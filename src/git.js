@@ -1,12 +1,13 @@
 /**
- * dsh-plugin-github — Git 执行层
+ * dsh-plugin-github — Git execution layer
  *
- * 纯 Node.js 实现，不依赖任何 DSH 内部包，方便单独测试。
- * 所有 git 子进程都走 runProcess()，统一处理：
- *   - 参数数组传参（绝不拼接 shell 字符串，避免注入）
- *   - 超时与 AbortSignal
- *   - stdout/stderr 截断
- *   - Windows 下隐藏控制台窗口
+ * Pure Node.js implementation with no dependency on any DSH-internal package, so it is
+ * easy to test on its own.
+ * Every git subprocess goes through runProcess(), which handles, in one place:
+ *   - arguments passed as an array (a shell string is never concatenated, so no injection)
+ *   - timeouts and AbortSignal
+ *   - stdout/stderr truncation
+ *   - hiding the console window on Windows
  */
 
 import { spawn } from 'node:child_process'
@@ -15,23 +16,25 @@ import path from 'node:path'
 import { mkdir, mkdtemp, open, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
-/** 单次 git 命令的默认超时。 */
+/** Default timeout for a single git command. */
 export const DEFAULT_TIMEOUT_MS = 120_000
 
-/** 返回给模型前，stdout / stderr 各自的截断上限（字符）。 */
+/** Truncation cap (in characters) for stdout / stderr before it is returned to the model. */
 export const MAX_OUTPUT_CHARS = 60_000
 
 /**
- * 执行一个外部进程并收集输出。
+ * Run an external process and collect its output.
  *
- * 为什么用「临时文件 + 文件描述符」而不是 `stdio: ['pipe','pipe','pipe']`：
- * DSH 的文件沙箱下，Node 的管道 stdio 依赖命名管道，受限模式会直接返回
- * `spawn EPERM`（实测）。把子进程的 stdout/stderr 重定向到临时文件后，
- * 只用到文件 I/O，在受限与不受限两种模式下都能正常工作，也不需要
- * shell 解释字符串——参数始终以数组传入，不经过 shell，天然免疫命令注入。
+ * Why "temp files + file descriptors" instead of `stdio: ['pipe','pipe','pipe']`:
+ * under the DSH file sandbox, Node's piped stdio relies on named pipes and the restricted
+ * mode returns `spawn EPERM` outright (measured). Redirecting the child's stdout/stderr to
+ * temp files uses nothing but file I/O, so it works in both the restricted and the
+ * unrestricted mode, and it also avoids handing a string to a shell to interpret —
+ * arguments are always passed as an array and never go through a shell, which makes
+ * command injection structurally impossible.
  *
- * @param {string} command 可执行文件
- * @param {string[]} args 参数数组
+ * @param {string} command executable
+ * @param {string[]} args argument array
  * @param {{cwd?: string, env?: Record<string, string|undefined>, signal?: AbortSignal, timeoutMs?: number, input?: string}} options
  * @returns {Promise<{ok: boolean, code: number|null, signal: string|null, stdout: string, stderr: string, truncated: boolean, timedOut: boolean, aborted: boolean, error?: string}>}
  */
@@ -48,7 +51,7 @@ export async function runProcess(command, args, options = {}) {
   try {
     scratch = await mkdtemp(path.join(tmpdir(), 'dsh-gh-'))
   } catch (error) {
-    return failure(`无法创建临时目录：${message(error)}`)
+    return failure(`Cannot create a temp directory: ${message(error)}`)
   }
   const outPath = path.join(scratch, 'stdout.txt')
   const errPath = path.join(scratch, 'stderr.txt')
@@ -70,7 +73,7 @@ export async function runProcess(command, args, options = {}) {
   } catch (error) {
     await closeQuietly(outHandle, errHandle, stdinHandle)
     await rm(scratch, { recursive: true, force: true }).catch(() => {})
-    return failure(`无法创建输出文件：${message(error)}`)
+    return failure(`Cannot create the output files: ${message(error)}`)
   }
 
   const result = await new Promise(resolve => {
@@ -79,7 +82,7 @@ export async function runProcess(command, args, options = {}) {
       try {
         stdinFd = openSync(stdinPath, 'r')
       } catch (error) {
-        resolve({ kind: 'error', error: `无法打开 stdin 文件：${message(error)}` })
+        resolve({ kind: 'error', error: `Cannot open the stdin file: ${message(error)}` })
         return
       }
     }
@@ -98,7 +101,7 @@ export async function runProcess(command, args, options = {}) {
         try {
           closeSyncFd(stdinFd)
         } catch {
-          /* 子进程可能已接管 */
+          /* the child process may have taken it over */
         }
       }
       resolve(outcome)
@@ -113,7 +116,7 @@ export async function runProcess(command, args, options = {}) {
       try {
         child?.kill()
       } catch {
-        /* 进程可能已退出 */
+        /* the process may already have exited */
       }
     }
 
@@ -122,11 +125,12 @@ export async function runProcess(command, args, options = {}) {
         cwd,
         env: { ...process.env, ...env },
         windowsHide: true,
-        // 关键：stdout/stderr 走文件描述符，stdin 走文件，全都不用命名管道。
+        // Key point: stdout/stderr go through file descriptors and stdin goes through a file,
+        // so no named pipe is used anywhere.
         stdio: [stdinFd >= 0 ? stdinFd : 'ignore', outHandle.fd, errHandle.fd],
       })
     } catch (error) {
-      done({ kind: 'error', error: `无法启动 ${command}: ${message(error)}` })
+      done({ kind: 'error', error: `Cannot start ${command}: ${message(error)}` })
       return
     }
 
@@ -144,7 +148,7 @@ export async function runProcess(command, args, options = {}) {
       signal.addEventListener('abort', onAbort, { once: true })
     }
 
-    child.on('error', error => done({ kind: 'error', error: `进程错误: ${message(error)}` }))
+    child.on('error', error => done({ kind: 'error', error: `Process error: ${message(error)}` }))
     child.on('close', (code, closeSignal) => done({ kind: 'close', code, closeSignal }))
   })
 
@@ -164,12 +168,12 @@ export async function runProcess(command, args, options = {}) {
 
   if (result.kind === 'error') return { ...base, ok: false, error: result.error }
   if (result.kind === 'aborted') {
-    return { ...base, ok: false, aborted: true, signal: 'ABORTED', error: '调用已被取消（AbortSignal）' }
+    return { ...base, ok: false, aborted: true, signal: 'ABORTED', error: 'The call was cancelled (AbortSignal)' }
   }
   if (result.kind === 'timeout') {
     return {
       ...base, ok: false, timedOut: true, signal: 'TIMEOUT',
-      error: `命令超时（${timeoutMs}ms）：${command} ${args.join(' ')}`,
+      error: `Command timed out (${timeoutMs}ms): ${command} ${args.join(' ')}`,
     }
   }
   return { ...base, ok: result.code === 0, code: result.code, signal: result.closeSignal }
@@ -186,7 +190,7 @@ function message(error) {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** 关闭同步打开的文件描述符。 */
+/** Close a file descriptor that was opened synchronously. */
 function closeSyncFd(fd) {
   closeSync(fd)
 }
@@ -197,7 +201,7 @@ async function closeQuietly(...handles) {
   }
 }
 
-/** 读取输出文件并按上限截断。 */
+/** Read an output file and truncate it at the cap. */
 async function readCapped(file) {
   try {
     const buffer = await readFile(file)
@@ -209,7 +213,7 @@ async function readCapped(file) {
   }
 }
 
-/** git 需要的、屏蔽交互与证书提示的环境变量。 */
+/** Environment variables git needs in order to suppress interactive and certificate prompts. */
 function gitEnv(token) {
   /** @type {Record<string, string>} */
   const env = {
@@ -220,7 +224,8 @@ function gitEnv(token) {
     LC_ALL: 'C',
   }
   if (token) {
-    // 不写进 .git/config，不写进命令行：只作为单次进程的 -c 配置传入。
+    // Not written into .git/config and not written into the command line: passed in only as
+    // -c config for this single process.
     env.GIT_CONFIG_COUNT = '1'
     env.GIT_CONFIG_KEY_0 = 'http.extraHeader'
     env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64')}`
@@ -229,7 +234,7 @@ function gitEnv(token) {
 }
 
 /**
- * 执行一条 git 命令。
+ * Run a single git command.
  * @param {string[]} args
  * @param {{cwd?: string, token?: string, signal?: AbortSignal, timeoutMs?: number}} options
  */
@@ -245,7 +250,7 @@ export async function runGit(args, options = {}) {
 }
 
 /**
- * 判断某个路径是否是一个 git 工作区。
+ * Check whether a path is a git working tree.
  * @param {string} dir
  * @returns {Promise<boolean>}
  */
@@ -259,9 +264,10 @@ export async function isGitRepo(dir) {
 }
 
 /**
- * 把各种形态的仓库标识转成 HTTPS 克隆地址。
- * 只把 `owner/repo`（以及裸 git@ 形式）补全成 github.com 地址；
- * 已经是 http(s):// 或 file:// 的地址原样返回——否则本地/自建服务会被改写成 github.com。
+ * Turn the various shapes of repository identifier into an HTTPS clone URL.
+ * Only `owner/repo` (and the bare git@ form) is completed into a github.com URL;
+ * anything already using http(s):// or file:// is returned unchanged — otherwise local
+ * clones and self-hosted services would be rewritten to github.com.
  * @param {string} repo
  * @returns {string}
  */
@@ -276,17 +282,19 @@ export function remoteUrl(repo) {
   return `https://github.com/${value.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '')}`
 }
 
-/** owner/repo 形式（去掉 .git）；无法识别时返回 undefined。 */
+/** owner/repo form (with .git stripped); returns undefined when it cannot be recognized. */
 export function repoSlug(repo) {
   const value = String(repo ?? '').trim()
 
-  // HTTP(S) 用 URL 解析而不是正则：主机可带端口，路径段数也不固定，
-  // 手写正则很容易在 "host:port/owner/repo" 上错误回溯（实测踩过）。
+  // For HTTP(S), parse with URL instead of a regex: the host may carry a port and the number
+  // of path segments is not fixed, so a hand-written regex backtracks wrongly on
+  // "host:port/owner/repo" (a mistake actually made here once).
   if (/^https?:\/\//i.test(value)) {
     const trailingHost = /^https?:\/\/[^/\s]+$/i.test(value)
     if (!trailingHost) {
-      // 本测试/自建服务场景：主机根下直接挂一个仓库（path 只有一段），
-      // 用主机名当 owner，这样白名单语法 owner/* 依然可用。
+      // Local test / self-hosted service case: a repository hangs directly off the host root
+      // (the path has a single segment). Use the hostname as the owner, which keeps the
+      // allowlist syntax owner/* usable.
       let host
       let segments = []
       try {
@@ -309,8 +317,9 @@ export function repoSlug(repo) {
 }
 
 /**
- * 判断标识是否为本地路径（file:// 或绝对路径）。
- * 注意 Windows 上 `path.isAbsolute('http://…')` 会返回 true，必须先排除 http(s)。
+ * Check whether an identifier is a local path (file:// or an absolute path).
+ * Note that on Windows `path.isAbsolute('http://…')` returns true, so http(s) must be
+ * excluded first.
  */
 export function isLocalRepoRef(repo) {
   const value = String(repo ?? '').trim()
@@ -319,11 +328,13 @@ export function isLocalRepoRef(repo) {
 }
 
 /**
- * 本地目录名（克隆时用）。
+ * Local directory name (used when cloning).
  *
- * 用 `<owner>__<repo>` 而不是裸的 `<repo>`：只取 basename 会让 `alice/tool`
- * 和 `bob/tool` 撞进同一个目录，进而把改动推到错误的远端（审查发现 D1）。
- * 两个下划线作为分隔，避免与合法的 owner/repo 字符集（允许单下划线）混淆。
+ * `<owner>__<repo>` rather than a bare `<repo>`: taking only the basename makes
+ * `alice/tool` and `bob/tool` collide into the same directory and then push changes to the
+ * wrong remote (found in review, D1).
+ * Two underscores separate the parts, so the name cannot be confused with the legal
+ * owner/repo character set (which allows a single underscore).
  */
 export function repoDirName(repo) {
   const value = String(repo ?? '').trim()
@@ -341,7 +352,7 @@ export function repoDirName(repo) {
 }
 
 /**
- * 读取本地克隆的 origin 地址。
+ * Read the origin URL of a local clone.
  * @param {string} cwd
  * @param {{token?: string, signal?: AbortSignal}} [options]
  * @returns {Promise<string | undefined>}
@@ -354,14 +365,15 @@ export async function originUrl(cwd, options = {}) {
 }
 
 /**
- * 读取本地克隆**推送时实际会用**的地址。
+ * Read the URLs a local clone will **actually use when pushing**.
  *
- * 关键：`git remote get-url origin` 返回的是 fetch URL，而 `git push` 会优先用
- * `remote.<name>.pushurl`。只看 fetch URL 会让「授权校验的地址」和「真正被访问的地址」
- * 不一致——一个被写入 .git/config 的 pushurl 就能把带 PAT 的请求送到别的主机。
+ * Key point: `git remote get-url origin` returns the fetch URL, while `git push` prefers
+ * `remote.<name>.pushurl`. Looking only at the fetch URL makes "the address authorization
+ * checked" differ from "the address actually contacted" — a pushurl written into
+ * .git/config is enough to send a PAT-bearing request to a different host.
  * @param {string} cwd
  * @param {{token?: string, signal?: AbortSignal}} [options]
- * @returns {Promise<string[]>} 所有推送地址（去重后）
+ * @returns {Promise<string[]>} all push URLs (deduplicated)
  */
 export async function pushUrls(cwd, options = {}) {
   const result = await runGit(['remote', 'get-url', '--push', '--all', 'origin'], { cwd, ...options })
@@ -370,18 +382,19 @@ export async function pushUrls(cwd, options = {}) {
 }
 
 /**
- * 校验一个远端地址是否指向被允许的 GitHub 主机。
+ * Verify that a remote URL points at an allowed GitHub host.
  *
- * 白名单规则只约束 `owner/repo`，不约束主机；如果插件的 token 会被送到任意主机，
- * 那么「白名单里的 slug 出现在攻击者域名下」就是一次凭据外泄。因此：
- *   - `owner/repo` 这种规范形式一律解析到 github.com（由 remoteUrl 补全）
- *   - 已经是 URL 的形式只允许 github.com / www.github.com
- *   - file:// 与本地路径不联网，无条件放行
- *   - 自建 Git 服务需要一个显式开关（allowNonGithubRemotes），因为「允许任意主机」
- *     等于「允许把凭据发给任意主机」
+ * The allowlist rules constrain only `owner/repo`, never the host; and if the plugin's
+ * token can be sent to any host at all, then "a slug from the allowlist appearing on an
+ * attacker's domain" is a credential leak. Therefore:
+ *   - canonical `owner/repo` always resolves to github.com (completed by remoteUrl)
+ *   - forms that are already URLs allow only github.com / www.github.com
+ *   - file:// and local paths never touch the network, so they are always allowed
+ *   - a self-hosted Git service needs an explicit switch (allowNonGithubRemotes), because
+ *     "any host is allowed" is the same as "credentials may be sent to any host"
  * @param {string} url
  * @param {boolean} [allowNonGithub]
- * @returns {string | undefined} 不允许时返回原因
+ * @returns {string | undefined} the reason when it is not allowed
  */
 export function assertAllowedHost(url, allowNonGithub = false) {
   const value = String(url ?? '').trim()
@@ -389,9 +402,9 @@ export function assertAllowedHost(url, allowNonGithub = false) {
   if (allowNonGithub) return undefined
   if (/^file:\/\//i.test(value)) return undefined
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
-    // 没有 scheme：ssh 简写（git@host:path）或本地路径
+    // No scheme: an ssh shorthand (git@host:path) or a local path
     const ssh = value.match(/^git@([^:\s]+):/i)
-    if (ssh) return ssh[1].toLowerCase() === 'github.com' ? undefined : `远端主机 ${ssh[1]} 不是 github.com`
+    if (ssh) return ssh[1].toLowerCase() === 'github.com' ? undefined : `Remote host ${ssh[1]} is not github.com`
     if (/^[A-Za-z]:[\\/]/.test(value) || path.isAbsolute(value)) return undefined
     return undefined
   }
@@ -399,41 +412,44 @@ export function assertAllowedHost(url, allowNonGithub = false) {
   try {
     host = new URL(value).hostname.toLowerCase()
   } catch {
-    return `无法解析远端地址：${value}`
+    return `Cannot parse the remote URL: ${value}`
   }
   if (host === 'github.com' || host === 'www.github.com') return undefined
-  return `远端主机 ${host} 不在允许列表内（只允许 github.com）。`
-    + '确实要用自建 Git 服务时，请在插件配置里显式设置 allowNonGithubRemotes: true'
-    + '（注意：这等于允许把凭据发给你指定的任何主机）。'
+  return `Remote host ${host} is not in the allowed list (only github.com is allowed).`
+    + ' If you really need a self-hosted Git service, explicitly set allowNonGithubRemotes: true in the plugin config'
+    + ' (note: that is the same as allowing credentials to be sent to any host you point it at).'
 }
 
 /**
- * 确认本地目录的 origin 确实是请求的那个仓库。
+ * Confirm that the origin of a local directory really is the repository that was requested.
  *
- * 这是授权模型的关键一环：白名单校验的是 `args.repo`，而实际推送/拉取的是
- * 目录里的 origin。两者若不一致，白名单就可能授权到另一个仓库（审查发现 D1/D11）。
+ * This is a key part of the authorization model: the allowlist validates `args.repo`, while
+ * what is actually pushed/pulled is the origin inside the directory. If the two do not
+ * match, the allowlist may have authorized a different repository (found in review, D1/D11).
  *
- * 刻意写成**同步函数**（调用方先把 origin 取出来传进来）：同步函数里的 throw 在任何
- * 环境下都是普通异常；而 async 函数内部的 throw 依赖运行时把拒绝正确地传播进 promise
- * 链——在这台机器的 Node 24.19 上实测会逃逸成进程级 unhandledRejection。
+ * Deliberately written as a **synchronous function** (the caller reads the origin first and
+ * passes it in): a throw inside a synchronous function is an ordinary exception in any
+ * environment, whereas a throw inside an async function relies on the runtime propagating
+ * the rejection correctly through the promise chain — measured on this machine's Node 24.19,
+ * it escapes as a process-level unhandledRejection.
  *
  * @param {{actual: string | undefined, requested: string, dir: string, kind?: string, allowNonGithub?: boolean}} options
- * @returns {string} 实际 origin 地址
- * @throws {Error} 当 origin 缺失、与请求的仓库不一致，或指向不被允许的主机
+ * @returns {string} the actual origin URL
+ * @throws {Error} when origin is missing, differs from the requested repository, or points at a disallowed host
  */
 export function assertOriginMatches(options) {
   const { actual, requested, dir, kind = 'origin', allowNonGithub = false } = options
   if (actual === undefined || String(actual).trim() === '') {
     throw new Error(
-      `本地目录 ${dir} 没有 ${kind}，无法确认它就是 ${requested}。`
-      + '请删除该目录后重新 gh_repo action=clone。',
+      `Local directory ${dir} has no ${kind}, so it cannot be confirmed to be ${requested}.`
+      + ' Delete that directory and run gh_repo action=clone again.',
     )
   }
   const hostProblem = assertAllowedHost(actual, allowNonGithub)
   if (hostProblem !== undefined) {
     throw new Error(
-      `拒绝操作：本地目录 ${dir} 的 ${kind} 是 ${actual}，${hostProblem}。`
-      + '继续操作会把凭据发给一个不受信任的主机。',
+      `Refusing the operation: the ${kind} of local directory ${dir} is ${actual}, ${hostProblem}.`
+      + ' Continuing would send credentials to an untrusted host.',
     )
   }
   const actualSlug = repoSlug(actual)
@@ -443,27 +459,28 @@ export function assertOriginMatches(options) {
     : normalizeRemote(actual) === normalizeRemote(requested)
   if (!same) {
     throw new Error(
-      `拒绝操作：本地目录 ${dir} 的 ${kind} 是 ${actual}（${actualSlug ?? '无法识别'}），`
-      + `而请求的是 ${requested}（${requestedSlug ?? '无法识别'}）。`
-      + '目录内容与请求的仓库不一致，继续操作可能把改动推到错误的远端。'
-      + '请用 gh_repo action=clone 克隆到干净目录，或检查 allowRepos 与 repo 参数。',
+      `Refusing the operation: the ${kind} of local directory ${dir} is ${actual} (${actualSlug ?? 'unrecognized'}),`
+      + ` while the request is for ${requested} (${requestedSlug ?? 'unrecognized'}).`
+      + ' The directory contents do not match the requested repository, so continuing could push the changes to the wrong remote.'
+      + ' Clone into a clean directory with gh_repo action=clone, or check the allowRepos and repo arguments.',
     )
   }
   return actual
 }
 
-/** 归一化远端地址用于比较：去掉尾部斜杠与 .git，统一小写。 */
+/** Normalize a remote URL for comparison: strip the trailing slashes and .git, and lowercase. */
 export function normalizeRemote(value) {
   return String(value ?? '').trim().replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase()
 }
 
 /**
- * 克隆（或复用已存在的本地克隆）。已存在且是 git 仓库时只做 fetch。
+ * Clone (or reuse an existing local clone). When it already exists and is a git repository,
+ * only a fetch is done.
  * @param {{repo: string, dir: string, token?: string, signal?: AbortSignal, depth?: number}} options
  */
 export async function cloneOrFetch(options) {
   const { repo, dir, token, signal, depth } = options
-  // remoteUrl 现在对各种形态都是幂等的：owner/repo → github，URL/本地路径原样。
+  // remoteUrl is now idempotent for every shape: owner/repo → github, URL/local path as-is.
   const target = options.remote ?? remoteUrl(repo)
   await mkdir(path.dirname(dir), { recursive: true })
 
@@ -481,7 +498,7 @@ export async function cloneOrFetch(options) {
   return { reused: false, result }
 }
 
-/** 当前 HEAD 的短 sha 与提交标题。 */
+/** Short sha and commit subject of the current HEAD. */
 export async function headCommit(cwd, options = {}) {
   const result = await runGit(['log', '-1', '--pretty=format:%h%x09%s'], { cwd, ...options })
   if (!result.ok) return undefined
@@ -490,7 +507,7 @@ export async function headCommit(cwd, options = {}) {
 }
 
 /**
- * 解析 git status --porcelain=v1 -uall。
+ * Parse git status --porcelain=v1 -uall.
  * @param {string} cwd
  * @param {{token?: string, signal?: AbortSignal}} options
  */
@@ -505,7 +522,7 @@ export async function statusEntries(cwd, options = {}) {
 }
 
 /**
- * 读取一次 diff。
+ * Read one diff.
  * @param {{cwd: string, staged?: boolean, path?: string, maxChars?: number, token?: string, signal?: AbortSignal}} options
  */
 export async function diffText(options) {
@@ -517,13 +534,13 @@ export async function diffText(options) {
   const text = result.stdout
   return {
     result,
-    text: text.length > maxChars ? `${text.slice(0, maxChars)}\n…（已截断，共 ${text.length} 字符）` : text,
+    text: text.length > maxChars ? `${text.slice(0, maxChars)}\n… (truncated, ${text.length} characters in total)` : text,
     truncated: text.length > maxChars,
   }
 }
 
 /**
- * git log 的紧凑列表。
+ * Compact list from git log.
  * @param {{cwd: string, limit?: number, path?: string, token?: string, signal?: AbortSignal}} options
  */
 export async function logEntries(options) {
@@ -542,7 +559,7 @@ export async function logEntries(options) {
   return { entries, result }
 }
 
-/** 分支列表。 */
+/** Branch list. */
 export async function branches(cwd, options = {}) {
   const result = await runGit(['branch', '--no-color', '--format=%(refname:short)%09%(HEAD)'], { cwd, ...options })
   if (!result.ok) return { entries: [], result }
@@ -556,12 +573,12 @@ export async function branches(cwd, options = {}) {
   return { entries, result }
 }
 
-/** 暂存若干路径。 */
+/** Stage a set of paths. */
 export async function stage(cwd, paths, options = {}) {
   return runGit(['add', '--', ...paths], { cwd, ...options })
 }
 
-/** 提交（作者信息走 -c，不污染用户全局配置）。 */
+/** Commit (author information goes through -c, so the user's global config is not polluted). */
 export async function commit(cwd, message, options = {}) {
   const { author, ...rest } = options
   const args = ['-c', 'commit.gpgsign=false']
@@ -571,7 +588,7 @@ export async function commit(cwd, message, options = {}) {
   return runGit(args, { cwd, ...rest })
 }
 
-/** push 到 origin 的指定分支。 */
+/** Push to the given branch on origin. */
 export async function push(cwd, options = {}) {
   const { branch, setUpstream, force, ...rest } = options
   const args = ['push']
@@ -582,7 +599,7 @@ export async function push(cwd, options = {}) {
   return runGit(args, { cwd, timeoutMs: 300_000, ...rest })
 }
 
-/** pull（默认 --ff-only，避免把冲突丢给模型）。 */
+/** pull (defaults to --ff-only, so conflicts are not dumped on the model). */
 export async function pull(cwd, options = {}) {
   const { rebase, ...rest } = options
   const args = ['pull']

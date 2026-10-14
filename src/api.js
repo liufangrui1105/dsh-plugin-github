@@ -1,19 +1,20 @@
 /**
- * dsh-plugin-github — GitHub REST 客户端（fetch 实现，无第三方依赖）
+ * dsh-plugin-github — GitHub REST client (fetch implementation, no third-party dependencies)
  *
- * 只负责 HTTP；授权判定留在工具层。绝不把 token 放进返回文本或错误消息。
+ * Only handles HTTP; authorization decisions stay in the tool layer. The token is never placed in
+ * returned text or error messages.
  */
 
 export const API_BASE = 'https://api.github.com'
 export const DEFAULT_ACCEPT = 'application/vnd.github+json'
 export const API_VERSION = '2022-11-28'
 
-/** GitHub 建议的 User-Agent，缺失会被拒绝。 */
+/** The User-Agent GitHub recommends; requests without one are rejected. */
 const USER_AGENT = 'dsh-plugin-github'
 
 /**
- * 发起一次 GitHub API 请求。
- * @param {string} endpoint 以 / 开头的路径，例如 /repos/owner/repo
+ * Make one GitHub API request.
+ * @param {string} endpoint Path starting with /, for example /repos/owner/repo
  * @param {{method?: string, token?: string, body?: unknown, query?: Record<string, string|number|boolean|undefined>, signal?: AbortSignal, accept?: string, timeoutMs?: number}} [options]
  * @returns {Promise<{ok: boolean, status: number, statusText: string, json?: unknown, text?: string, headers: Record<string,string>, rateLimit?: {remaining?: number, reset?: number}, error?: string}>}
  */
@@ -32,7 +33,7 @@ export async function githubRequest(endpoint, options = {}) {
   if (url.origin !== API_BASE) {
     return {
       ok: false, status: 0, statusText: 'BLOCKED', headers: {},
-      error: `出于安全考虑，只允许访问 ${API_BASE}（收到 ${url.origin}）。`,
+      error: `For security reasons only ${API_BASE} may be accessed (received ${url.origin}).`,
     }
   }
   for (const [key, value] of Object.entries(query ?? {})) {
@@ -100,10 +101,10 @@ export async function githubRequest(endpoint, options = {}) {
       const message = json && typeof json === 'object' && 'message' in json ? String(json.message) : response.statusText
       result.error = `GitHub API ${response.status} ${response.statusText}: ${message}`
       if (response.status === 401) {
-        result.error += '\n（401：token 无效或未配置。可用 gh_config action=set 写入，或设置环境变量 GITHUB_TOKEN。）'
+        result.error += '\n(401: the token is invalid or not configured. Store one with gh_config action=set, or set the GITHUB_TOKEN environment variable.)'
       }
       if (response.status === 403 && collected['x-ratelimit-remaining'] === '0') {
-        result.error += '\n（403 且配额耗尽：等 x-ratelimit-reset 之后重试，或换用带更高配额的 token。）'
+        result.error += '\n(403 with the quota exhausted: retry after x-ratelimit-reset, or switch to a token with a higher quota.)'
       }
     }
     return result
@@ -112,8 +113,8 @@ export async function githubRequest(endpoint, options = {}) {
     return {
       ok: false, status: 0, statusText: aborted ? 'ABORTED' : 'NETWORK', headers: {},
       error: aborted
-        ? `请求被取消或超时（${timeoutMs}ms）：${method} ${url.pathname}`
-        : `网络错误：${error instanceof Error ? error.message : String(error)}`,
+        ? `Request aborted or timed out (${timeoutMs}ms): ${method} ${url.pathname}`
+        : `Network error: ${error instanceof Error ? error.message : String(error)}`,
     }
   } finally {
     clearTimeout(timer)
@@ -121,9 +122,9 @@ export async function githubRequest(endpoint, options = {}) {
   }
 }
 
-/** 把任意 JSON 压成适合放进模型上下文的紧凑文本。 */
+/** Flatten arbitrary JSON into compact text suitable for the model context. */
 export function compactJson(value, maxChars = 20_000) {
   const text = JSON.stringify(value, null, 2)
   if (text.length <= maxChars) return text
-  return `${text.slice(0, maxChars)}\n…（已截断，共 ${text.length} 字符；请用更精确的查询参数缩小结果）`
+  return `${text.slice(0, maxChars)}\n… (truncated: ${text.length} characters in total; narrow the result with more precise query parameters)`
 }

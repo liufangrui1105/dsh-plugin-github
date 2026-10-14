@@ -1,14 +1,14 @@
 /**
- * 用「宿主的 output 校验规则」逐个检查每个工具在所有可达分支上的返回值。
+ * Check every tool's return value on every reachable branch against "the host's output validation rules".
  *
- * 宿主的规则（dsh-util-values 的 isJsonValue）：值必须能无损通过 JSON 往返——
- * 出现 undefined / 函数 / Symbol / 非有限数字 / 非普通对象（class 实例）就算失败，
- * 整次工具调用会被判为 `value is not lossless JSON`。
+ * The host's rule (isJsonValue in dsh-util-values): a value must survive a JSON round trip losslessly —
+ * an undefined / function / Symbol / non-finite number / non-plain object (a class instance) counts as
+ * a failure, and the whole tool call is judged `value is not lossless JSON`.
  *
- * 插件最初就是在这里翻车：`gh_config action=status` 在没配 token 时返回了
- * `{ credentials_ref: undefined, identity: undefined }`，宿主直接报错。
+ * This is exactly where the plugin first tripped over: `gh_config action=status` returned
+ * `{ credentials_ref: undefined, identity: undefined }` when no token was configured, and the host reported an error.
  *
- * 运行：node test/output-contract.test.mjs
+ * Run: node test/output-contract.test.mjs
  */
 
 import assert from 'node:assert/strict'
@@ -24,39 +24,39 @@ import {
 
 const runner = createRunner('output-contract.test.mjs')
 
-/** 等价于宿主对 output 值的无损 JSON 判定；返回违规列表。 */
+/** Equivalent to the host's lossless-JSON judgement of an output value; returns the list of violations. */
 function losslessProblems(value, pathLabel = 'output', seen = new Set()) {
   if (value === null) return []
   const type = typeof value
   if (type === 'string' || type === 'boolean') return []
   if (type === 'number') {
-    return Number.isFinite(value) && !Object.is(value, -0) ? [] : [`${pathLabel}: 非有限数字或 -0`]
+    return Number.isFinite(value) && !Object.is(value, -0) ? [] : [`${pathLabel}: non-finite number or -0`]
   }
-  if (type === 'undefined') return [`${pathLabel}: undefined（JSON.stringify 会丢掉它）`]
+  if (type === 'undefined') return [`${pathLabel}: undefined (JSON.stringify drops it)`]
   if (type === 'function') return [`${pathLabel}: function`]
   if (type === 'symbol' || type === 'bigint') return [`${pathLabel}: ${type}`]
-  if (type !== 'object') return [`${pathLabel}: 未知类型 ${type}`]
+  if (type !== 'object') return [`${pathLabel}: unknown type ${type}`]
 
-  if (seen.has(value)) return [`${pathLabel}: 循环引用`]
+  if (seen.has(value)) return [`${pathLabel}: circular reference`]
   seen.add(value)
   /** @type {string[]} */
   const problems = []
   if (Array.isArray(value)) {
-    // 数组必须稠密且没有额外属性：宿主用 Reflect.ownKeys 判定。
+    // An array must be dense and carry no extra properties: the host judges with Reflect.ownKeys.
     const keys = Reflect.ownKeys(value)
-    if (keys.length !== value.length + 1) problems.push(`${pathLabel}: 数组有额外属性或空洞`)
+    if (keys.length !== value.length + 1) problems.push(`${pathLabel}: array has extra properties or holes`)
     for (let index = 0; index < value.length; index++) {
-      if (!Object.hasOwn(value, index)) problems.push(`${pathLabel}[${index}]: 空洞`)
+      if (!Object.hasOwn(value, index)) problems.push(`${pathLabel}[${index}]: hole`)
     }
     value.forEach((item, index) => problems.push(...losslessProblems(item, `${pathLabel}[${index}]`, seen)))
   } else {
     const proto = Object.getPrototypeOf(value)
     if (proto !== Object.prototype && proto !== null) {
-      problems.push(`${pathLabel}: 非普通对象（原型 ${proto?.constructor?.name ?? 'unknown'}）`)
+      problems.push(`${pathLabel}: non-plain object (prototype ${proto?.constructor?.name ?? 'unknown'})`)
     }
     for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string') problems.push(`${pathLabel}: 非字符串键 ${String(key)}`)
-      if (!Object.prototype.propertyIsEnumerable.call(value, key)) problems.push(`${pathLabel}.${String(key)}: 不可枚举`)
+      if (typeof key !== 'string') problems.push(`${pathLabel}: non-string key ${String(key)}`)
+      if (!Object.prototype.propertyIsEnumerable.call(value, key)) problems.push(`${pathLabel}.${String(key)}: not enumerable`)
     }
     for (const [key, item] of Object.entries(value)) {
       problems.push(...losslessProblems(item, `${pathLabel}.${key}`, seen))
@@ -66,27 +66,27 @@ function losslessProblems(value, pathLabel = 'output', seen = new Set()) {
   return problems
 }
 
-/** 调用工具并断言返回值满足宿主的无损 JSON 契约。 */
+/** Call a tool and assert its return value satisfies the host's lossless-JSON contract. */
 async function callChecked(tools, name, args, exec, context = {}) {
   const value = await call(tools, name, args, exec)
   const problems = losslessProblems(value, `${name} ${JSON.stringify(args)}`)
-  assert.deepEqual(problems, [], `${context.label ?? name} 的返回值不是无损 JSON：\n  ${problems.join('\n  ')}`)
+  assert.deepEqual(problems, [], `${context.label ?? name} did not return lossless JSON:\n  ${problems.join('\n  ')}`)
   const roundTrip = JSON.parse(JSON.stringify(value))
-  assert.deepEqual(roundTrip, value, `${context.label ?? name} 的返回值经 JSON 往返后发生变化`)
+  assert.deepEqual(roundTrip, value, `${context.label ?? name}: the return value changed after a JSON round trip`)
   return value
 }
 
-await runner.test('gh_config status：未配置 token / 有凭据服务 / 已配置三种形态都无损', async () => {
+await runner.test('gh_config status: all three shapes (no token / credentials service present / configured) are lossless', async () => {
   const plugin = await loadPlugin()
 
-  // 形态 1：什么都没有（就是这里最初返回了 undefined 键）。
+  // Shape 1: nothing at all (this is where an undefined key was first returned).
   const bare = fakeContext()
   plugin.apply(bare.ctx, { workspaceRoot: process.cwd() })
   const none = await callChecked(bare.tools, 'gh_config', { action: 'status' })
   assert.equal(none.configured, false)
-  assert.equal('identity' in none, false, '没有 token 时不应出现 identity 键')
+  assert.equal('identity' in none, false, 'without a token there must be no identity key')
 
-  // 形态 2：有凭据服务但未配置（describe 返回 configured:false / source:undefined）。
+  // Shape 2: the credentials service is present but nothing is configured (describe returns configured:false / source:undefined).
   const store = new Map()
   const credentials = {
     async resolve(ref) { const v = store.get(ref); return v === undefined ? undefined : { value: v, source: 'file' } },
@@ -96,15 +96,15 @@ await runner.test('gh_config status：未配置 token / 有凭据服务 / 已配
   }
   const withService = fakeContext({ credentials })
   plugin.apply(withService.ctx, { workspaceRoot: process.cwd() })
-  await callChecked(withService.tools, 'gh_config', { action: 'status' }, undefined, { label: 'gh_config(服务已挂载,未配置)' })
+  await callChecked(withService.tools, 'gh_config', { action: 'status' }, undefined, { label: 'gh_config(service mounted, not configured)' })
 
-  // 形态 3：已配置 + 远端返回缺字段（没有 x-oauth-scopes）。
+  // Shape 3: configured + the remote response misses a field (no x-oauth-scopes).
   await withFakeFetch(async () => new Response(JSON.stringify({ login: 'octocat' }), {
     status: 200, headers: { 'content-type': 'application/json' },
   }), async () => {
     await callChecked(withService.tools, 'gh_config', { action: 'set', token: 'ghp_x' })
     const configured = await callChecked(withService.tools, 'gh_config', { action: 'status' }, undefined, {
-      label: 'gh_config(已配置,响应缺 scopes)',
+      label: 'gh_config(configured, response misses scopes)',
     })
     assert.equal(configured.identity.login, 'octocat')
     assert.equal('scopes' in configured.identity, false)
@@ -112,7 +112,7 @@ await runner.test('gh_config status：未配置 token / 有凭据服务 / 已配
   })
 })
 
-await runner.test('gh_repo status：origin 缺失（没有 remote）时也要无损', async context => {
+await runner.test('gh_repo status: still lossless when origin is missing (no remote)', async context => {
   const root = await context.setup()
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext()
@@ -123,19 +123,19 @@ await runner.test('gh_repo status：origin 缺失（没有 remote）时也要无
   assert.equal((await runGit(['init', '--initial-branch=main', dir])).ok, true)
   await runGit(['-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '--allow-empty', '-m', 'init'], { cwd: dir })
 
-  // 没有 origin：origin 字段必须是缺失而不是 undefined。
+  // No origin: the origin field must be missing rather than undefined.
   const status = await callChecked(tools, 'gh_repo', { repo: 'local/repo', action: 'status' })
   assert.equal(status.clean, true)
-  assert.equal('origin' in status, false, '没有 remote 时不应出现 origin 键')
+  assert.equal('origin' in status, false, 'without a remote there must be no origin key')
 
-  // 空仓库（还没有任何提交）：head 也应为缺失。
+  // An empty repository (no commits yet): head should be missing too.
   const emptyDir = path.join(context.workspace, repoDirName('local/empty'))
   assert.equal((await runGit(['init', '--initial-branch=main', emptyDir])).ok, true)
   const empty = await callChecked(tools, 'gh_repo', { repo: 'local/empty', action: 'status' })
-  assert.equal('head' in empty, false, '空仓库不应出现 head 键')
+  assert.equal('head' in empty, false, 'an empty repository must not expose a head key')
 })
 
-await runner.test('gh_file list：目录项没有 size 时不能留 undefined', async context => {
+await runner.test('gh_file list: a directory entry without a size must not leave an undefined behind', async context => {
   const root = await context.setup()
   const upstream = await makeUpstream(root)
   try {
@@ -152,9 +152,9 @@ await runner.test('gh_file list：目录项没有 size 时不能留 undefined', 
 
     const listed = await callChecked(tools, 'gh_file', { repo: upstream.repo, action: 'list' })
     const dirEntry = listed.entries.find(entry => entry.name === 'somedir')
-    assert.ok(dirEntry, '应列出 somedir')
+    assert.ok(dirEntry, 'somedir should be listed')
     assert.equal(dirEntry.type, 'dir')
-    assert.equal('size' in dirEntry, false, '目录不应出现 size 键')
+    assert.equal('size' in dirEntry, false, 'a directory must not expose a size key')
     const fileEntry = listed.entries.find(entry => entry.name === 'src.txt')
     assert.equal(typeof fileEntry.size, 'number')
   } finally {
@@ -162,7 +162,7 @@ await runner.test('gh_file list：目录项没有 size 时不能留 undefined', 
   }
 })
 
-await runner.test('全部工具的常规路径返回值都是无损 JSON', async context => {
+await runner.test('every tool returns lossless JSON on its normal path', async context => {
   const root = await context.setup()
   const upstream = await makeUpstream(root)
   try {
@@ -177,7 +177,7 @@ await runner.test('全部工具的常规路径返回值都是无损 JSON', async
       gitAuthorEmail: 'dsh@example.com',
     })
 
-    // gh_repo 的各 action
+    // Every gh_repo action
     await callChecked(tools, 'gh_repo', { repo: upstream.repo, action: 'clone' })
     await callChecked(tools, 'gh_repo', { repo: upstream.repo, action: 'status' })
     await callChecked(tools, 'gh_repo', { repo: upstream.repo, action: 'diff' })
@@ -185,7 +185,7 @@ await runner.test('全部工具的常规路径返回值都是无损 JSON', async
     await callChecked(tools, 'gh_repo', { repo: upstream.repo, action: 'branches' })
     await callChecked(tools, 'gh_repo', { repo: upstream.repo, action: 'clone' }, undefined, { label: 'gh_repo fetch' })
 
-    // gh_file 的各 action
+    // Every gh_file action
     await callChecked(tools, 'gh_file', { repo: upstream.repo, action: 'get', path: 'src.txt' })
     await callChecked(tools, 'gh_file', { repo: upstream.repo, action: 'list' })
     await callChecked(tools, 'gh_file', { repo: upstream.repo, action: 'put', path: 'n.txt', content: 'x\n' })
@@ -194,11 +194,11 @@ await runner.test('全部工具的常规路径返回值都是无损 JSON', async
     })
 
     // gh_commit / gh_push
-    await callChecked(tools, 'gh_commit', { repo: upstream.repo, message: 'feat: 无损测试' })
+    await callChecked(tools, 'gh_commit', { repo: upstream.repo, message: 'feat: lossless test' })
     await callChecked(tools, 'gh_push', { repo: upstream.repo })
     await callChecked(tools, 'gh_pull', { repo: upstream.repo })
 
-    // gh_api（只读，走假 fetch）
+    // gh_api (read-only, through a fake fetch)
     const apiCtx = fakeContext()
     plugin.apply(apiCtx.ctx, { workspaceRoot: process.cwd(), allowRepos: ['me/repo'] })
     await withFakeFetch(async (url, init) => new Response(
@@ -216,12 +216,12 @@ await runner.test('全部工具的常规路径返回值都是无损 JSON', async
   }
 })
 
-await runner.test('失败路径抛的是 Error 而不是非法返回值', async () => {
+await runner.test('failure paths throw an Error instead of returning an invalid value', async () => {
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext()
   plugin.apply(ctx, { workspaceRoot: process.cwd(), allowRepos: ['a/b'] })
 
-  // 错误信息里不能带 undefined 字面量之外的结构问题：抛 Error 即可。
+  // Beyond the undefined literal, the error message must not leak structural problems: throwing an Error is enough.
   let failed
   try {
     await call(tools, 'gh_repo', { repo: 'a/b', action: 'nope' })
@@ -229,7 +229,7 @@ await runner.test('失败路径抛的是 Error 而不是非法返回值', async 
     failed = error
   }
   assert.ok(failed instanceof Error)
-  assert.ok(!String(failed.message).includes('undefined'), `错误信息里不应出现 undefined：${failed.message}`)
+  assert.ok(!String(failed.message).includes('undefined'), `the error message must not contain undefined: ${failed.message}`)
 
   let failed2
   try {
@@ -238,7 +238,7 @@ await runner.test('失败路径抛的是 Error 而不是非法返回值', async 
     failed2 = error
   }
   assert.ok(failed2 instanceof Error)
-  assert.ok(!String(failed2.message).includes('undefined'), `错误信息里不应出现 undefined：${failed2.message}`)
+  assert.ok(!String(failed2.message).includes('undefined'), `the error message must not contain undefined: ${failed2.message}`)
 })
 
 runner.finish()

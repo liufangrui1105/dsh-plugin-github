@@ -1,10 +1,10 @@
 /**
- * dsh-plugin-github — 仓库定位与访问控制
+ * dsh-plugin-github — repository resolution and access control
  *
- * 安全模型：
- *   - workspaceRoot 之内才会被读写（每个路径都做真实路径前缀校验）
- *   - allowRepos 非空时构成白名单，支持 owner/repo、owner/*、* 三种写法
- *   - 推送到远端还需要 allowPush: true，否则 gh_push 直接拒绝
+ * Security model:
+ *   - reads and writes happen only inside workspaceRoot (every path gets a real-path prefix check)
+ *   - a non-empty allowRepos forms an allowlist, supporting the owner/repo, owner/* and * forms
+ *   - pushing to a remote additionally requires allowPush: true, otherwise gh_push refuses outright
  */
 
 import path from 'node:path'
@@ -28,7 +28,7 @@ import { assertAllowedHost, isGitRepo, isLocalRepoRef, repoDirName, repoSlug, re
  * @property {boolean} [allowForcePush]
  */
 
-/** 把配置规范化成内部形态。 */
+/** Normalize the config into its internal shape. */
 export function normalizeConfig(raw, fallbackCwd) {
   const cfg = raw ?? {}
   const splitList = value => {
@@ -42,9 +42,9 @@ export function normalizeConfig(raw, fallbackCwd) {
     allowPush: cfg.allowPush === true,
     allowForcePush: cfg.allowForcePush === true,
     allowApiWrite: cfg.allowApiWrite === true,
-    /** 允许非 github.com 的远端（自建 Git 服务）。默认 false：任意主机 = 凭据可被送到任意主机。 */
+    /** Allow remotes that are not github.com (self-hosted Git services). Default false: any host = credentials can be sent to any host. */
     allowNonGithubRemotes: cfg.allowNonGithubRemotes === true,
-    /** 只读的 gh_api 是否也受 allowRepos 约束。默认 true（白名单一旦设置就全面生效）。 */
+    /** Whether read-only gh_api is also bound by allowRepos. Default true (once the allowlist is set it applies everywhere). */
     allowApiReadOutsideAllowlist: cfg.allowApiReadOutsideAllowlist === true,
     tokenRef: String(cfg.tokenRef ?? 'GITHUB_TOKEN'),
     tokenEnv: String(cfg.tokenEnv ?? 'GITHUB_TOKEN'),
@@ -52,18 +52,18 @@ export function normalizeConfig(raw, fallbackCwd) {
     commandTimeoutMs: Number.isFinite(cfg.commandTimeoutMs) ? Number(cfg.commandTimeoutMs) : 120_000,
     maxDiffChars: Number.isFinite(cfg.maxDiffChars) ? Number(cfg.maxDiffChars) : 20_000,
     maxReadChars: Number.isFinite(cfg.maxReadChars) ? Number(cfg.maxReadChars) : 40_000,
-    /** 首次需要凭据时是否自动弹出绑定引导。默认 true。 */
+    /** Whether to pop up the bind prompt automatically the first time credentials are needed. Default true. */
     allowAutoBind: cfg.allowAutoBind !== false,
-    /** 是否允许在引导里让用户粘贴 token。默认 true。 */
+    /** Whether the prompt may ask the user to paste a token. Default true. */
     promptForToken: cfg.promptForToken !== false,
-    /** 账号存储文件路径（仅在不使用 DSH 凭据服务时生效）。省略则放在  下。 */
+    /** Account store file path (only effective when the DSH credential service is not used). When omitted it is placed under $DSH_HOME. */
     accountStorePath: typeof cfg.accountStorePath === 'string' && cfg.accountStorePath !== '' ? cfg.accountStorePath : undefined,
     gitAuthorName: typeof cfg.gitAuthorName === 'string' ? cfg.gitAuthorName : undefined,
     gitAuthorEmail: typeof cfg.gitAuthorEmail === 'string' ? cfg.gitAuthorEmail : undefined,
   }
 }
 
-/** 单个仓库是否在白名单内。 */
+/** Whether a single repository is in the allowlist. */
 export function repoAllowed(cfg, repo) {
   if (cfg.allowRepos.length === 0) return true
   const slug = repoSlug(repo)
@@ -80,52 +80,54 @@ export function repoAllowed(cfg, repo) {
   return false
 }
 
-/** 只允许严格的 owner/repo（可带 .git 后缀）。 */
+/** Only strict owner/repo is allowed (an optional .git suffix is accepted). */
 const STRICT_SLUG = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/
 
 /**
- * 白名单规则必须是严格 owner/repo 或通配形式。
- * 不接受完整 URL：URL 的 host 与额外路径段都会被忽略，等于放行任意主机
- * （审查发现 D4：`allowRepos: ['b/c']` 曾能授权推送到任意 host 上以 b/c.git 结尾的路径）。
+ * An allowRepos rule must be a strict owner/repo or a wildcard form.
+ * A full URL is not accepted: the URL's host and extra path segments would both be ignored,
+ * which amounts to allowing any host (found in review, D4: `allowRepos: ['b/c']` used to
+ * authorize a push to any host on a path ending in b/c.git).
  */
 function assertStrictAllowRule(rule) {
   const body = rule === '*' ? '*' : rule.endsWith('/*') ? `${rule.slice(0, -2)}/x` : rule.startsWith('*/') ? `x${rule.slice(1)}` : rule
   if (body === '*') return
   if (!STRICT_SLUG.test(body.replace(/\.git$/i, ''))) {
     throw new Error(
-      `allowRepos 规则 "${rule}" 不是合法的 owner/repo 形式。`
-      + '只接受 owner/repo、owner/*、*/repo、*；不接受完整 URL'
-      + '（URL 的主机与额外路径段无法被可靠校验）。',
+      `allowRepos rule "${rule}" is not a valid owner/repo form.`
+      + ' Only owner/repo, owner/*, */repo and * are accepted; a full URL is not'
+      + ' (a URL\'s host and extra path segments cannot be validated reliably).',
     )
   }
 }
 
-/** 加载时校验一次 allowRepos，避免把非法规则带进运行时。 */
+/** Validate allowRepos once at load time, so invalid rules never make it into runtime. */
 export function assertAllowRules(cfg) {
   for (const rule of cfg.allowRepos) assertStrictAllowRule(rule)
   return cfg
 }
 
-/** 允许写入（fetch/pull 之外的远端操作）时返回 undefined；否则返回拒绝原因。 */
+/** Returns undefined when writing (remote operations other than fetch/pull) is allowed; otherwise returns the reason for the refusal. */
 export function checkWriteAllowed(cfg, repo, action) {
   if (!repoAllowed(cfg, repo)) {
-    return `仓库 ${repo} 不在 allowRepos 白名单内（当前白名单：${cfg.allowRepos.join(', ') || '空=全部允许但写入仍需 allowPush'}）。拒绝 ${action}。`
+    return `Repository ${repo} is not in the allowRepos allowlist (current allowlist: ${cfg.allowRepos.join(', ') || 'empty = all repositories allowed, but writing still needs allowPush'}). Refusing ${action}.`
   }
   if (!cfg.allowPush) {
-    return `插件配置 allowPush 为 false，已拒绝 ${action}。如需允许写远端，请在 cordis.patch.yml 里为该插件设置 allowPush: true。`
+    return `The plugin config allowPush is false, so ${action} was refused. To allow writing to a remote, set allowPush: true for this plugin in cordis.patch.yml.`
   }
   return undefined
 }
 
-/** 本地路径必须在 workspaceRoot 之内（用真实路径判定，防符号链接逃逸）。 */
+/** A local path must be inside workspaceRoot (judged by its real path, to prevent symlink escapes). */
 export async function ensureInsideWorkspace(cfg, targetPath) {
   const resolved = path.resolve(targetPath)
   const relative = path.relative(cfg.workspaceRoot, resolved)
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`路径越界：${resolved} 不在工作区根目录 ${cfg.workspaceRoot} 之内。`)
+    throw new Error(`Path escapes the workspace: ${resolved} is not inside the workspace root ${cfg.workspaceRoot}.`)
   }
   if (relative === '') return resolved
-  // 已存在的最深祖先进一次 realpath 校验，未创建的中间目录不阻断。
+  // Run one realpath check on the deepest ancestor that already exists; intermediate
+  // directories that have not been created yet do not block.
   const realRoot = await realpath(cfg.workspaceRoot).catch(() => cfg.workspaceRoot)
   let probe = resolved
   for (;;) {
@@ -140,21 +142,22 @@ export async function ensureInsideWorkspace(cfg, targetPath) {
     }
     const realRelative = path.relative(realRoot, real)
     if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
-      throw new Error(`路径越界（符号链接）：${real} 指向工作区之外。`)
+      throw new Error(`Path escapes the workspace (symlink): ${real} points outside the workspace.`)
     }
     return resolved
   }
 }
 
 /**
- * 解析仓库 → 本地路径。
+ * Resolve a repository → local path.
  * @param {PluginConfig} cfg
- * @param {string} repo owner/repo 形式
+ * @param {string} repo owner/repo form
  * @param {{requireLocal?: boolean, dir?: string}} [options]
  * @returns {Promise<{dir: string, slug?: string, remote: string}>}
  */
 export async function resolveRepo(cfg, repo, options = {}) {
-  // 本地路径（含 file:// 与绝对路径）也接受：用于测试、镜像或已有本地克隆。
+  // Local paths (including file:// and absolute paths) are accepted too: for tests, mirrors,
+  // or an existing local clone.
   const raw = String(repo ?? '').trim()
   const isLocalPath = isLocalRepoRef(raw)
   const slug = isLocalPath
@@ -162,19 +165,20 @@ export async function resolveRepo(cfg, repo, options = {}) {
     : repoSlug(raw)
   if (!slug) {
     throw new Error(
-      `无法解析仓库标识 "${repo}"。请使用 owner/repo 形式，例如 deepseek-ai/deepseek-harness。`,
+      `Cannot parse the repository identifier "${repo}". Use the owner/repo form, for example deepseek-ai/deepseek-harness.`,
     )
   }
-  // 主机必须被允许：白名单只约束 owner/repo，不约束主机。如果任意的
-  // `http://attacker/allowed/repo.git` 能通过白名单，插件的 PAT 就会被送到攻击者主机
-  // （审查发现 D2）。注意必须拿**原始输入**判主机——用它派生出来的 slug 再拼回
-  // github.com 会把攻击者主机洗掉。
+  // The host must be allowed: the allowlist constrains only owner/repo, never the host. If an
+  // arbitrary `http://attacker/allowed/repo.git` passed the allowlist, the plugin's PAT would
+  // be sent to the attacker's host (found in review, D2). Note that the host must be judged
+  // from the **raw input** — deriving a slug from it and pasting github.com back on would
+  // launder the attacker's host away.
   const hostSource = isLocalPath || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /^git@/i.test(raw)
     ? raw
     : remoteUrl(slug)
   const hostProblem = assertAllowedHost(hostSource, cfg.allowNonGithubRemotes === true)
   if (hostProblem !== undefined) {
-    throw new Error(`拒绝仓库 "${raw}"：${hostProblem}。`)
+    throw new Error(`Refusing repository "${raw}": ${hostProblem}.`)
   }
   const dir = options.dir
     ? await ensureInsideWorkspace(cfg, path.resolve(cfg.workspaceRoot, options.dir))
@@ -182,22 +186,22 @@ export async function resolveRepo(cfg, repo, options = {}) {
 
   if (options.requireLocal !== false && !(await isGitRepo(dir))) {
     const error = new Error(
-      `本地还没有 ${slug} 的克隆：${dir}\n先调用 gh_repo（action=clone, repo="${slug}"）再继续。`,
+      `There is no local clone of ${slug} yet: ${dir}\nCall gh_repo (action=clone, repo="${slug}") first, then continue.`,
     )
     error.code = 'REPO_NOT_CLONED'
     throw error
   }  return { dir, slug, remote: remoteUrl(slug) }
 }
 
-/** 生成给模型看的紧凑概览文本。 */
+/** Build the compact summary text shown to the model. */
 export function summarizeConfig(cfg, token) {
   return [
     `workspaceRoot: ${cfg.workspaceRoot}`,
-    `allowRepos: ${cfg.allowRepos.length === 0 ? '（空 = 不限制仓库名）' : cfg.allowRepos.join(', ')}`,
+    `allowRepos: ${cfg.allowRepos.length === 0 ? '(empty = repository names are not restricted)' : cfg.allowRepos.join(', ')}`,
     `allowPush: ${cfg.allowPush}`,
     `allowForcePush: ${cfg.allowForcePush}`,
     `allowApiWrite: ${cfg.allowApiWrite}`,
     `tokenRef: ${cfg.tokenRef}`,
-    `token: ${token.configured ? `已配置（来源 ${token.source}）` : '未配置'}`,
+    `token: ${token.configured ? `configured (source ${token.source})` : 'not configured'}`,
   ].join('\n')
 }

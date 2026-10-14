@@ -1,10 +1,11 @@
 /**
- * 测试用：把 `git http-backend`（CGI）桥接到一个本地 HTTP 服务上，
- * 从而在没有网络、也没有 sh.exe 的情况下验证真实的 git smart HTTP 链路
- * （clone / fetch / push）。
+ * Test-only: bridge `git http-backend` (CGI) onto a local HTTP server,
+ * so the real git smart HTTP path (clone / fetch / push) can be verified with
+ * no network and no sh.exe.
  *
- * 桥接本身也用「文件描述符 stdio」跑子进程：受限沙箱下管道 stdio 会 EPERM，
- * 这与 src/git.js 采用同一套策略。
+ * The bridge itself also runs the child process with "file-descriptor stdio":
+ * under the restricted sandbox piped stdio returns EPERM, the same strategy
+ * src/git.js uses.
  */
 
 import http from 'node:http'
@@ -15,7 +16,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { runProcess } from '../src/git.js'
 
-/** 解析 CGI 输出：Status 头 + 其余头 + body（兼容 chunked 包裹）。 */
+/** Parse CGI output: Status header + remaining headers + body (tolerates a chunked wrapper). */
 function parseCgi(raw) {
   const separator = raw.indexOf('\r\n\r\n')
   const headerText = separator < 0 ? raw.toString('latin1') : raw.subarray(0, separator).toString('latin1')
@@ -37,7 +38,7 @@ function parseCgi(raw) {
   return { status, headers, body }
 }
 
-/** chunked 响应体的解码（git http-backend 对 POST 用 chunked）。 */
+/** Decode a chunked response body (git http-backend uses chunked for POST). */
 function dechunk(body) {
   if (body.length === 0) return body
   const parts = []
@@ -55,9 +56,9 @@ function dechunk(body) {
 }
 
 /**
- * 启动一个只服务一个仓库的 smart HTTP 端点。
- * @param {string} projectRoot 包含 `<name>.git` 的目录
- * @param {string} repoName 仓库目录名（例如 origin.git）
+ * Start a smart HTTP endpoint serving exactly one repository.
+ * @param {string} projectRoot directory containing `<name>.git`
+ * @param {string} repoName repository directory name (for example origin.git)
  * @returns {Promise<{url: string, close: () => Promise<void>, projectRoot: string}>}
  */
 export async function startGitHttp(projectRoot, repoName = 'origin.git') {
@@ -111,7 +112,7 @@ export async function startGitHttp(projectRoot, repoName = 'origin.git') {
       const cgi = parseCgi(raw)
       if (result.status !== 0) {
         response.writeHead(500, { 'content-type': 'text/plain' })
-        response.end(`git http-backend 退出码 ${result.status}\n${readFileSync(stderrFile, 'utf8')}`)
+        response.end(`git http-backend exited with code ${result.status}\n${readFileSync(stderrFile, 'utf8')}`)
         return
       }
       const payload = (cgi.headers['Transfer-Encoding'] ?? '').toLowerCase() === 'chunked'

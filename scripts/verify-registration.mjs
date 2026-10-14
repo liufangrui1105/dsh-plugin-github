@@ -1,18 +1,20 @@
 /**
- * 用「从 dsh-tools 源码抄下来的约束」在本地校验插件注册的每个工具定义。
+ * Validate every tool definition the plugin registers, locally, against "the constraints copied from
+ * the dsh-tools source".
  *
- * 这些规则来自 @deepseek-ai/dsh-tools 的 register() 与 json-schema.ts：
- *   - output 必须是 { schema, render, presentationMeta? }，render 必须是函数
- *   - output.schema 必须属于受支持的 JSON Schema 子集：
- *     只允许 type / oneOf / properties / required / additionalProperties / items / enum / const
- *     + 注解 description / title / default / examples；
- *     纯注解 schema（没有 type 也没有 oneOf）表示「任意 JSON」，是合法写法
- *   - 名字不得是保留的 run_code
- *   - 工具名不得重复
+ * These rules come from @deepseek-ai/dsh-tools' register() and json-schema.ts:
+ *   - output must be { schema, render, presentationMeta? }, and render must be a function
+ *   - output.schema must belong to the supported JSON Schema subset:
+ *     only type / oneOf / properties / required / additionalProperties / items / enum / const
+ *     + the annotations description / title / default / examples;
+ *     an annotation-only schema (neither type nor oneOf) means "any JSON" and is a legal form
+ *   - the name must not be the reserved run_code
+ *   - tool names must not repeat
  *
- * 它不能替代真实宿主里的加载验证，但能在交付前挡住最常见的「注册即抛错」。
+ * It cannot replace the loading validation in the real host, but it blocks the most common
+ * "throws as soon as it is registered" before delivery.
  *
- * 运行：node scripts/verify-registration.mjs
+ * Run: node scripts/verify-registration.mjs
  */
 
 import { fileURLToPath } from 'node:url'
@@ -27,45 +29,45 @@ const ANNOTATION_KEYWORDS = new Set(['description', 'title', 'default', 'example
 const SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
 const ONE_OF_SIBLINGS = ['properties', 'required', 'additionalProperties', 'items', 'enum', 'const']
 
-/** 等价于 assertSupportedJsonSchema 的检查，返回违规列表。 */
+/** Equivalent to the assertSupportedJsonSchema check; returns the list of violations. */
 function checkSchema(node, path, violations) {
   if (typeof node !== 'object' || node === null || Array.isArray(node)) {
-    violations.push(`${path} 必须是 schema 对象`)
+    violations.push(`${path} must be a schema object`)
     return
   }
   for (const key of Object.keys(node)) {
     if (CONSTRAINT_KEYWORDS.has(key)) continue
     if (ANNOTATION_KEYWORDS.has(key)) continue
-    violations.push(`${path}.${key} 不是受支持的关键字`)
+    violations.push(`${path}.${key} is not a supported keyword`)
   }
   if ('description' in node && typeof node.description !== 'string') {
-    violations.push(`${path}.description 必须是字符串`)
+    violations.push(`${path}.description must be a string`)
   }
   const hasType = Object.hasOwn(node, 'type')
   const hasOneOf = Object.hasOwn(node, 'oneOf')
   if (hasType && hasOneOf) {
-    violations.push(`${path} 不能同时声明 type 与 oneOf`)
+    violations.push(`${path} cannot declare type and oneOf at the same time`)
     return
   }
   if (!hasType && !hasOneOf) {
     for (const key of ONE_OF_SIBLINGS) {
-      if (Object.hasOwn(node, key)) violations.push(`${path}.${key} 需要先声明 type 或 oneOf`)
+      if (Object.hasOwn(node, key)) violations.push(`${path}.${key} requires type or oneOf to be declared first`)
     }
     return
   }
   if (hasOneOf) {
     if (!Array.isArray(node.oneOf) || node.oneOf.length < 2) {
-      violations.push(`${path}.oneOf 至少需要两个分支`)
+      violations.push(`${path}.oneOf needs at least two branches`)
       return
     }
     for (const key of ONE_OF_SIBLINGS) {
-      if (Object.hasOwn(node, key)) violations.push(`${path}.${key} 不能与 oneOf 并列`)
+      if (Object.hasOwn(node, key)) violations.push(`${path}.${key} cannot sit alongside oneOf`)
     }
     node.oneOf.forEach((branch, index) => checkSchema(branch, `${path}.oneOf[${index}]`, violations))
     return
   }
   if (!SCHEMA_TYPES.has(node.type)) {
-    violations.push(`${path}.type 必须是单一类型字符串（不支持 type 数组）`)
+    violations.push(`${path}.type must be a single type string (type arrays are not supported)`)
     return
   }
   const allowedFor = {
@@ -74,13 +76,13 @@ function checkSchema(node, path, violations) {
   }
   for (const [key, types] of Object.entries(allowedFor)) {
     if (Object.hasOwn(node, key) && !types.includes(node.type)) {
-      violations.push(`${path}.${key} 不能出现在 type="${node.type}" 上`)
+      violations.push(`${path}.${key} cannot appear on type="${node.type}"`)
     }
   }
   if (node.type === 'object') {
     if (Object.hasOwn(node, 'properties')) {
       if (typeof node.properties !== 'object' || node.properties === null) {
-        violations.push(`${path}.properties 必须是 schema 对象`)
+        violations.push(`${path}.properties must be a schema object`)
       } else {
         for (const [key, child] of Object.entries(node.properties)) {
           checkSchema(child, `${path}.properties.${key}`, violations)
@@ -89,11 +91,11 @@ function checkSchema(node, path, violations) {
     }
     if (Object.hasOwn(node, 'required')) {
       if (!Array.isArray(node.required) || node.required.some(entry => typeof entry !== 'string')) {
-        violations.push(`${path}.required 必须是字符串数组`)
+        violations.push(`${path}.required must be an array of strings`)
       } else {
         const declared = node.properties ?? {}
         for (const key of node.required) {
-          if (!Object.hasOwn(declared, key)) violations.push(`${path}.required 里的 "${key}" 未在 properties 中声明`)
+          if (!Object.hasOwn(declared, key)) violations.push(`"${key}" in ${path}.required is not declared in properties`)
         }
       }
     }
@@ -103,74 +105,74 @@ function checkSchema(node, path, violations) {
   }
 }
 
-await runner.test('每个工具定义都满足 dsh-tools 的注册约束', async () => {
+await runner.test('every tool definition satisfies the dsh-tools registration constraints', async () => {
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext()
   plugin.apply(ctx, {})
 
-  assertNonEmpty(tools, '必须注册至少一个工具')
+  assertNonEmpty(tools, 'at least one tool must be registered')
 
   const names = new Set()
   for (const [name, definition] of tools) {
-    if (name === 'run_code') throw new Error('run_code 是保留名，不得注册')
-    if (names.has(name)) throw new Error(`工具名重复：${name}`)
+    if (name === 'run_code') throw new Error('run_code is a reserved name and must not be registered')
+    if (names.has(name)) throw new Error(`duplicate tool name: ${name}`)
     names.add(name)
 
     if (typeof definition.description !== 'string' || definition.description.trim() === '') {
-      throw new Error(`${name}: description 必须是非空字符串`)
+      throw new Error(`${name}: description must be a non-empty string`)
     }
-    if (typeof definition.execute !== 'function') throw new Error(`${name}: execute 必须是函数`)
+    if (typeof definition.execute !== 'function') throw new Error(`${name}: execute must be a function`)
 
     const output = definition.output
-    if (output === undefined || typeof output !== 'object') throw new Error(`${name}: 必须声明 output`)
-    if (typeof output.render !== 'function') throw new Error(`${name}: output.render 必须是函数`)
+    if (output === undefined || typeof output !== 'object') throw new Error(`${name}: output must be declared`)
+    if (typeof output.render !== 'function') throw new Error(`${name}: output.render must be a function`)
     if (output.presentationMeta !== undefined && typeof output.presentationMeta !== 'function') {
-      throw new Error(`${name}: output.presentationMeta 必须是函数`)
+      throw new Error(`${name}: output.presentationMeta must be a function`)
     }
 
     const outputViolations = []
     checkSchema(output.schema, 'output.schema', outputViolations)
-    if (outputViolations.length > 0) throw new Error(`${name}: ${outputViolations.join('；')}`)
+    if (outputViolations.length > 0) throw new Error(`${name}: ${outputViolations.join('; ')}`)
 
     if (definition.parameters === undefined || definition.parameters.type !== 'object') {
-      throw new Error(`${name}: parameters 必须是 object 根的 JSON Schema`)
+      throw new Error(`${name}: parameters must be a JSON Schema with an object root`)
     }
     if (definition.parameters.additionalProperties !== undefined
       && typeof definition.parameters.additionalProperties !== 'boolean') {
-      throw new Error(`${name}: parameters.additionalProperties 必须是布尔值`)
+      throw new Error(`${name}: parameters.additionalProperties must be a boolean`)
     }
     if (definition.timeoutMs !== undefined
       && (!Number.isFinite(definition.timeoutMs) || definition.timeoutMs <= 0)) {
-      throw new Error(`${name}: timeoutMs 必须是正有限数`)
+      throw new Error(`${name}: timeoutMs must be a positive finite number`)
     }
   }
 })
 
-await runner.test('output.render 对典型返回值产出合法 content blocks', async () => {
+await runner.test('output.render produces valid content blocks for typical return values', async () => {
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext()
   plugin.apply(ctx, {})
 
   const samples = [
     { ok: true, files: [{ code: 'M', path: 'a.txt' }] },
-    '纯文本结果',
+    'a plain-text result',
     null,
     [{ ok: true }],
   ]
   for (const [name, definition] of tools) {
     for (const sample of samples) {
       const blocks = definition.output.render({}, sample)
-      if (!Array.isArray(blocks)) throw new Error(`${name}: render 必须返回数组`)
+      if (!Array.isArray(blocks)) throw new Error(`${name}: render must return an array`)
       for (const block of blocks) {
         if (block?.type !== 'text' || typeof block.text !== 'string') {
-          throw new Error(`${name}: content block 必须是 { type: 'text', text: string }`)
+          throw new Error(`${name}: a content block must be { type: 'text', text: string }`)
         }
       }
     }
   }
 })
 
-await runner.test('parameters 必须是可无损 JSON 序列化的（模型 schema 投影要求）', async () => {
+await runner.test('parameters must be losslessly JSON-serializable (a model schema projection requirement)', async () => {
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext()
   plugin.apply(ctx, {})
@@ -179,29 +181,29 @@ await runner.test('parameters 必须是可无损 JSON 序列化的（模型 sche
     try {
       snapshot = JSON.parse(JSON.stringify(definition.parameters))
     } catch (error) {
-      throw new Error(`${name}: parameters 无法无损序列化（${error.message}）`)
+      throw new Error(`${name}: parameters cannot be serialized losslessly (${error.message})`)
     }
     if (JSON.stringify(snapshot) !== JSON.stringify(definition.parameters)) {
-      throw new Error(`${name}: parameters 序列化后不一致（可能含 undefined / 函数）`)
+      throw new Error(`${name}: parameters differ after serialization (may contain undefined / functions)`)
     }
   }
 })
 
-await runner.test('cordis.patch.yml 结构与 package.json 的 dsh.bundle 声明一致', async () => {
+await runner.test('the cordis.patch.yml structure matches the dsh.bundle declaration in package.json', async () => {
   const { readFile } = await import('node:fs/promises')
   const path = await import('node:path')
   const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
   const patchFile = pkg.dsh?.bundle?.patch
-  if (typeof patchFile !== 'string') throw new Error('package.json 缺少 dsh.bundle.patch')
+  if (typeof patchFile !== 'string') throw new Error('package.json is missing dsh.bundle.patch')
 
   const patchText = await readFile(path.join(root, patchFile.replace(/^\.\//, '')), 'utf8')
   if (!patchText.includes(`name: '${pkg.name}'`) && !patchText.includes(`name: "${pkg.name}"`)) {
-    throw new Error(`patch 文件没有插入名为 ${pkg.name} 的插件行`)
+    throw new Error(`the patch file does not insert a plugin line named ${pkg.name}`)
   }
-  if (!/^- insert:/m.test(patchText)) throw new Error('patch 文件缺少 insert 段')
-  if (pkg.main !== 'src/index.js') throw new Error(`package.json main 应为 src/index.js，实际 ${pkg.main}`)
-  if (pkg.type !== 'module') throw new Error('package.json 必须是 ESM（type: module）')
+  if (!/^- insert:/m.test(patchText)) throw new Error('the patch file is missing the insert section')
+  if (pkg.main !== 'src/index.js') throw new Error(`package.json main should be src/index.js, actual ${pkg.main}`)
+  if (pkg.type !== 'module') throw new Error('package.json must be ESM (type: module)')
 })
 
 function assertNonEmpty(tools, message) {

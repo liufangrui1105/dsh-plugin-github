@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-github",
   "version": "0.1.0",
-  "description": "DeepSeek Harness 插件：把 GitHub 仓库接进 AI —— 账号绑定 / clone / 读文件 / 改文件 / 提交 / 推送 / REST API。",
+  "description": "DeepSeek Harness plugin: bind a GitHub account, then let the agent clone, read, edit, commit and push repositories.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -19,6 +19,7 @@
     "src",
     "cordis.patch.yml",
     "README.md",
+    "README.zh.md",
     "LICENSE"
   ],
   "scripts": {

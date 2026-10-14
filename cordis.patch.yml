@@ -1,63 +1,77 @@
-# dsh bundle patch：把一个插件行插入 profile 的配置层。
-# id 是这一行的稳定标识（用户可以在自己的 cordis.patch.yml 里按 id 覆盖 config）。
+# dsh bundle patch: inserts one plugin row into a profile's config layer.
+# `id` is the stable identity of this row, so a user can override its `config`
+# from their own cordis.patch.yml by matching that id.
 - insert:
     - id: github-repo
       name: 'dsh-plugin-github'
       config:
-        # ── 权限边界（默认最保守：能读、能本地改、不能推远端）────────────
-        # 允许推送/建仓库等写远端操作；不开这个，gh_push 与 gh_commit{push:true} 会被拒绝。
+        # ── Permission boundary (most conservative by default: read and edit
+        #    locally, but never write to a remote) ──────────────────────────
+        # Allow remote writes such as pushing and creating repositories. While
+        # this is off, gh_push and gh_commit{push:true} are refused outright.
         allowPush: false
-        # 允许 --force-with-lease 强推（仍受 allowPush 约束）。
+        # Allow `--force-with-lease` pushes (still bounded by allowPush).
         allowForcePush: false
-        # 允许 gh_api 的 POST/PATCH/PUT/DELETE；只读查询不受影响。
+        # Allow POST/PATCH/PUT/DELETE on gh_api; read-only calls are unaffected.
         allowApiWrite: false
 
-        # ── 仓库白名单 ───────────────────────────────────────────────
-        # 空数组 = 不按仓库名限制（写入仍由 allowPush / allowApiWrite 把关）。
-        # 支持 owner/repo、owner/*、*/repo、* 四种写法。
-        # 只接受严格 owner/repo 形式；完整 URL 会被拒绝（URL 的主机与额外路径段
-        # 无法被可靠校验，曾导致白名单可被绕过去授权另一个仓库）。
+        # ── Repository allowlist ──────────────────────────────────────────
+        # An empty array means no restriction by repository name (remote writes
+        # are still gated by allowPush / allowApiWrite).
+        # Accepted forms: owner/repo, owner/*, */repo, *.
+        # Only strict owner/repo is accepted; a full URL is rejected, because a
+        # URL's host and extra path segments cannot be checked reliably — that
+        # was once enough to make the allowlist authorize a different repository.
         allowRepos: []
 
-        # 只读的 gh_api 调用是否也受 allowRepos 约束。默认 false = 一旦设置了
-        # allowRepos，连只读查询也限制在白名单内的仓库。
-        # 设为 true 可以放行白名单之外的只读查询（例如搜索公开仓库）。
+        # Whether read-only gh_api calls are also bounded by allowRepos.
+        # Default false: once allowRepos is set, even reads are limited to
+        # allowlisted repositories. Set true to permit reads outside it
+        # (for example searching public repositories).
         allowApiReadOutsideAllowlist: false
 
-        # 是否允许 github.com 之外的远端（自建 Git 服务、内网 GitLab 等）。默认 false。
-        # 白名单只约束 owner/repo，不约束主机；若放行任意主机，
-        # `http://attacker/your/repo.git` 就能通过白名单并把 PAT 送到攻击者主机。
-        # 只有在你确实要连自建服务时才打开。
+        # Allow remotes other than github.com (self-hosted Git, an internal
+        # GitLab, …). Default false. The allowlist constrains owner/repo but not
+        # the host, so allowing any host means `http://attacker/your/repo.git`
+        # passes the allowlist and the PAT is sent to the attacker.
+        # Turn this on only when you really do talk to a self-hosted service.
         allowNonGithubRemotes: false
 
-        # ── 账号绑定 ────────────────────────────────────────────────
-        # 需要凭据但还没绑定账号时，是否弹出绑定引导（让用户粘贴一次 PAT）。
-        # 关掉后不会弹窗，操作会照旧发下去由远端判定成败。
+        # ── Account binding ───────────────────────────────────────────────
+        # Whether to prompt for account binding when an operation needs
+        # credentials but none is bound yet (one pasted PAT).
+        # With this off nothing is asked; the operation proceeds and the remote
+        # decides the outcome.
         allowAutoBind: true
-        # 是否允许在引导里让用户粘贴 token。关掉后引导只会提示改用环境变量/凭据文件。
+        # Whether the prompt may collect a pasted token. With this off the
+        # prompt only points at the environment variable / credential file.
         promptForToken: true
-        # 账号存储文件路径。只有宿主未挂载 DSH 凭据服务（ctx.credentials）时才用到；
-        # 省略则放在 $DSH_HOME/github-accounts.json。
+        # Path of the account file. Used only when the host has not mounted the
+        # DSH credential service (ctx.credentials); when omitted it lives at
+        # $DSH_HOME/github-accounts.json.
         # accountStorePath: '/path/to/github-accounts.json'
 
-        # ── 凭据 ────────────────────────────────────────────────────
-        # token 引用名（POSIX 环境变量名）。值优先从 DSH 凭据服务读取，
-        # 即 $DSH_HOME/.credentials.yaml 的 refs: 段，或用 gh_config action=set 写入。
+        # ── Credentials ───────────────────────────────────────────────────
+        # Token reference name (a POSIX environment variable name). Its value is
+        # read from the DSH credential service first, i.e. the `refs:` section of
+        # $DSH_HOME/.credentials.yaml, or written with gh_config action=set.
         tokenRef: GITHUB_TOKEN
-        # 凭据服务未命中时回退到这个环境变量。
+        # Environment variable to fall back to when the credential service has
+        # no value.
         tokenEnv: GITHUB_TOKEN
-        # 是否再回退到工作区内的 .env.local / .env。
+        # Also fall back to .env.local / .env inside the workspace.
         dotenv: true
 
-        # ── 行为调节 ────────────────────────────────────────────────
-        # 本地克隆的根目录。省略时用宿主进程工作目录。
+        # ── Behaviour ─────────────────────────────────────────────────────
+        # Root directory for local clones. Omitted means the host process's
+        # working directory.
         # workspaceRoot: '/path/to/clones'
-        # 单条 git 命令超时（毫秒）。
+        # Timeout for a single git command, in milliseconds.
         commandTimeoutMs: 120000
-        # 一次 diff 返回给模型的最大字符数。
+        # Maximum characters of a diff returned to the model.
         maxDiffChars: 20000
-        # 一次文件读取返回给模型的最大字符数。
+        # Maximum characters of a file read returned to the model.
         maxReadChars: 40000
-        # 提交作者（省略则用 git 全局配置）。
+        # Commit author (omitted means the git global configuration).
         # gitAuthorName: 'Your Name'
         # gitAuthorEmail: 'you@example.com'

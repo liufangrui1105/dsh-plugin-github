@@ -1,14 +1,17 @@
 /**
- * dsh-plugin-github — 插件入口
+ * dsh-plugin-github — plugin entry point
  *
- * 把 GitHub 仓库读写接进 DeepSeek Harness：clone / 读文件 / 改文件 / 提交 / 推送 / REST API。
+ * Wires GitHub repository read/write into DeepSeek Harness: clone / read files / edit files /
+ * commit / push / REST API.
  *
- * 注册方式：直接构造原始 JSON Schema 形态的 ToolDefinition 交给 ctx.tools.register()。
- * 这是 dsh-tools 明确支持的路径（MCP 工具就走这条），因此：
- *   - 模块加载期 import 任何 DSH 包 ⇒ 不需要，插件不会因为解析不到包而加载失败
- *   - 不需要 TypeScript 构建步骤，装完即用
- * 工具定义必须声明 output：{ schema, render }，其中 schema 用「纯注解」形式
- * （本插件的工具返回对象/字符串等异构 JSON，注解 schema 表示「任意 JSON 值」）。
+ * Registration: build a raw JSON-Schema-shaped ToolDefinition and hand it to ctx.tools.register().
+ * This is a path dsh-tools explicitly supports (MCP tools take it too), therefore:
+ *   - No DSH package needs to be imported at module load ⇒ the plugin cannot fail to load because
+ *     a package cannot be resolved
+ *   - No TypeScript build step is needed; it works as soon as it is installed
+ * A tool definition must declare output: { schema, render }, where schema uses the "annotation only"
+ * form (this plugin's tools return heterogeneous JSON such as objects and strings, so an annotation
+ * schema means "any JSON value").
  */
 
 import path from 'node:path'
@@ -20,10 +23,10 @@ import { githubRequest } from './api.js'
 
 export const name = 'github-repo'
 
-/** 只要求工具注册表；凭据服务用 ctx.get 可选获取。 */
+/** Only the tool registry is required; the credentials service is fetched optionally via ctx.get. */
 export const inject = ['tools']
 
-/** 未知配置键要报出来，避免用户把 allowPush 写成 allowPushes 却毫无反应。 */
+/** Unknown config keys must be reported, so a user writing allowPushes instead of allowPush notices. */
 const KNOWN_CONFIG_KEYS = new Set([
   'workspaceRoot', 'allowRepos', 'allowPush', 'allowForcePush', 'allowApiWrite',
   'allowApiReadOutsideAllowlist', 'allowNonGithubRemotes',
@@ -32,7 +35,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'allowAutoBind', 'promptForToken', 'accountStorePath',
 ])
 
-/** 参数声明（本插件的简化 DSL）→ 受支持的 JSON Schema 子集。 */
+/** Parameter declarations (this plugin's simplified DSL) → the supported JSON Schema subset. */
 function toJsonSchemaParameters(spec) {
   const properties = {}
   const required = []
@@ -46,73 +49,74 @@ function toJsonSchemaParameters(spec) {
     type: 'object',
     properties,
     ...(required.length > 0 ? { required } : {}),
-    // 参数根保持开放：模型偶尔多带一个字段不该让整次调用失败。
+    // Keep the parameter root open: the model occasionally sending one extra field must not fail the whole call.
     additionalProperties: true,
   }
 }
 
-/** 模型可见文本：字符串原样返回，其它值格式化成 JSON。 */
+/** Model-visible text: strings are returned as-is, any other value is formatted as JSON. */
 function renderValue(value) {
   if (typeof value === 'string') return [{ type: 'text', text: value }]
-  if (value === undefined || value === null) return [{ type: 'text', text: '(无结果)' }]
+  if (value === undefined || value === null) return [{ type: 'text', text: '(no result)' }]
   return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 }
 
-/** 原始注册路径下自己做一遍参数校验（类型 + 必填）。 */
+/** On the raw registration path, do the argument validation (type + required) ourselves. */
 function validateArgs(spec, args) {
   const problems = []
   for (const [key, node] of Object.entries(spec.parameters ?? {})) {
     const value = args[key]
     if (value === undefined || value === null) {
-      if (node.required === true) problems.push(`缺少必填参数 ${key}`)
+      if (node.required === true) problems.push(`missing required parameter ${key}`)
       continue
     }
     const actual = Array.isArray(value) ? 'array' : typeof value
     const expected = node.type === 'integer' ? 'number' : node.type
-    if (expected === 'number' && actual !== 'number') problems.push(`${key} 应为 number，收到 ${actual}`)
-    else if (expected === 'array' && actual !== 'array') problems.push(`${key} 应为 array，收到 ${actual}`)
+    if (expected === 'number' && actual !== 'number') problems.push(`${key} must be a number, received ${actual}`)
+    else if (expected === 'array' && actual !== 'array') problems.push(`${key} must be an array, received ${actual}`)
     else if (expected !== 'number' && expected !== 'array' && actual !== expected) {
-      problems.push(`${key} 应为 ${expected}，收到 ${actual}`)
+      problems.push(`${key} must be ${expected}, received ${actual}`)
     }
     if (node.type === 'integer' && typeof value === 'number' && !Number.isInteger(value)) {
-      problems.push(`${key} 应为整数`)
+      problems.push(`${key} must be an integer`)
     }
     if (node.type === 'array' && Array.isArray(value) && node.items?.type !== undefined) {
       const itemType = node.items.type === 'integer' ? 'number' : node.items.type
       if (value.some(entry => (Array.isArray(entry) ? 'array' : typeof entry) !== itemType)) {
-        problems.push(`${key} 的元素应全部是 ${itemType}`)
+        problems.push(`every element of ${key} must be ${itemType}`)
       }
     }
   }
   return problems
 }
 
-/** 工具定义：parameters（JSON Schema）+ output（注解 schema + render）+ execute（返回原始值）。 */
+/** Tool definition: parameters (JSON Schema) + output (annotation schema + render) + execute (returns the raw value). */
 function buildDefinition(spec, host) {
   return {
     name: spec.name,
     description: spec.description,
     parameters: toJsonSchemaParameters(spec),
     output: {
-      // 纯注解 schema = 不受约束的 JSON 值；这些工具返回对象/字符串等异构结果。
-      schema: { description: `${spec.name} 的结构化结果` },
+      // An annotation-only schema = an unconstrained JSON value; these tools return heterogeneous results.
+      schema: { description: `Structured result of ${spec.name}` },
       render: (_args, value) => renderValue(value),
     },
     async execute(args, exec) {
       const safeArgs = args ?? {}
       const problems = validateArgs(spec, safeArgs)
       if (problems.length > 0) {
-        throw new Error(`参数校验失败（${spec.name}）：${problems.join('；')}`)
+        throw new Error(`Argument validation failed (${spec.name}): ${problems.join('; ')}`)
       }
       const signal = exec?.signal instanceof AbortSignal ? exec.signal : undefined
-      // agent 要透传给工具：首次使用的绑定引导必须带上「提问的那个 Agent」才会被接受。
+      // The agent must be passed through to the tool: the first-use binding prompt is only accepted
+      // when it carries "the Agent that is asking".
       const agent = exec?.agent ?? host.currentAgent?.()
       return spec.execute(safeArgs, { ...(exec ?? {}), signal, credentials: host.credentials, agent })
     },
   }
 }
 
-/** DSH home：账号文件与 .credentials.yaml 都放在这里。 */
+/** DSH home: both the account file and .credentials.yaml live here. */
 function resolveDshHome() {
   const fromEnv = process.env.DSH_HOME
   if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return fromEnv.trim()
@@ -121,19 +125,19 @@ function resolveDshHome() {
 }
 
 /**
- * 查一个 token 对应的 GitHub 身份。绑定前必须先确认 token 有效，
- * 而不是把一个打错的 token 存进去。
+ * Look up the GitHub identity behind a token. The token must be confirmed valid before binding,
+ * rather than storing a mistyped token.
  * @param {string} token
  */
 async function lookupIdentity(token) {
   const response = await githubRequest('/user', { token })
   if (!response.ok) {
     const detail = response.error ?? `HTTP ${response.status}`
-    throw new Error(`token 校验失败：${detail}`)
+    throw new Error(`Token verification failed: ${detail}`)
   }
   const body = /** @type {{login?: string, name?: string}} */ (response.json ?? {})
   if (typeof body.login !== 'string' || body.login === '') {
-    throw new Error('token 校验失败：/user 没有返回 login（token 可能缺少读取用户的权限）。')
+    throw new Error('Token verification failed: /user returned no login (the token may lack permission to read the user).')
   }
   return {
     login: body.login,
@@ -143,7 +147,7 @@ async function lookupIdentity(token) {
 }
 
 /**
- * 插件入口。
+ * Plugin entry point.
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {Record<string, unknown>} [config]
  */
@@ -152,7 +156,7 @@ export function apply(ctx, config) {
   for (const key of Object.keys(raw)) {
     if (!KNOWN_CONFIG_KEYS.has(key)) {
       ctx.logger?.warn?.(
-        'github-repo: 未知配置项 "%s"（已忽略）。可用配置：%s',
+        'github-repo: unknown config key "%s" (ignored). Available config: %s',
         key,
         [...KNOWN_CONFIG_KEYS].join(', '),
       )
@@ -160,14 +164,14 @@ export function apply(ctx, config) {
   }
 
   const cfg = normalizeConfig(raw, process.cwd())
-  // 非法白名单规则在加载期就失败，而不是等到模型发起调用时才报错。
+  // Invalid allowlist rules fail at load time instead of only when the model makes a call.
   assertAllowRules(cfg)
 
   const credentials = ctx.get('credentials')
   const userQuestions = ctx.get('userQuestions')
   const agents = ctx.get('agents')
 
-  // 账号存储：优先 DSH 凭据服务，其次插件自有的 JSON 文件。
+  // Account storage: prefer the DSH credentials service, then the plugin's own JSON file.
   const { store, reason } = selectStore({
     credentials,
     dshHome: resolveDshHome(),
@@ -214,7 +218,7 @@ export function apply(ctx, config) {
   }
 
   ctx.logger?.info?.(
-    'github-repo: 已注册 %d 个工具（%s）；workspaceRoot=%s；allowPush=%s；allowApiWrite=%s；账号存储=%s',
+    'github-repo: registered %d tools (%s); workspaceRoot=%s; allowPush=%s; allowApiWrite=%s; account store=%s',
     registered.length,
     registered.join(', '),
     cfg.workspaceRoot,
@@ -223,8 +227,8 @@ export function apply(ctx, config) {
     reason,
   )
 
-  // 尽力提供一段极短的运行态上下文，让模型知道边界与当前账号。
-  // ctx.systemPrompt.context 的入参形态若无声明式接口则静默跳过（不影响工具可用性）。
+  // Best-effort extremely short runtime context, so the model knows the boundaries and the current account.
+  // If ctx.systemPrompt.context has no declarative interface, skip silently (tool availability is unaffected).
   try {
     const systemPrompt = ctx.get('systemPrompt')
     if (systemPrompt && typeof systemPrompt.context === 'function') {
@@ -237,7 +241,7 @@ export function apply(ctx, config) {
     }
   } catch (error) {
     ctx.logger?.debug?.(
-      'github-repo: 跳过 system prompt 上下文注入（%s）。',
+      'github-repo: skipping system prompt context injection (%s).',
       error instanceof Error ? error.message : String(error),
     )
   }
@@ -256,11 +260,11 @@ export function apply(ctx, config) {
   }
 
   refresh()
-  // 绑定/切换账号后刷新一次上下文里的账号信息。
+  // Refresh the account information in the context after binding or switching accounts.
   stateRefresh = refresh
 }
 
-/** 取当前发起调用的 Agent（绑定引导必须由它提问）。 */
+/** Fetch the Agent that initiated the current call (the binding prompt must be asked by it). */
 function safeCurrentAgent(agents) {
   try {
     return typeof agents?.currentInitiator === 'function' ? agents.currentInitiator() : undefined
@@ -269,31 +273,32 @@ function safeCurrentAgent(agents) {
   }
 }
 
-/** 模块级：最近一次解析到的凭据状态（只保留来源，不保留值）。 */
+/** Module level: the most recently resolved credential state (only the source is kept, never the value). */
 let tokenState
 
-/** 模块级：刷新账号上下文的回调（apply 时装配）。 */
+/** Module level: callback that refreshes the account context (wired up in apply). */
 let stateRefresh
 
 /**
- * 仅用于测试：重置模块级状态，让同一个模块实例可以反复 apply。
- * 有了它，测试就不需要靠查询串做缓存破坏——那会把依赖加载成第二份实例。
+ * Test-only: reset the module-level state so the same module instance can be applied repeatedly.
+ * With this, tests do not need cache-busting query strings — which would load a second instance of
+ * the dependencies.
  */
 export function __resetForTests() {
   tokenState = undefined
   stateRefresh = undefined
 }
 
-/** 生成注入 system prompt 的简短说明。 */
+/** Build the short note injected into the system prompt. */
 function githubRuntimeContext(cfg, state) {
   const account = state?.account
   return [
-    '## GitHub 插件（github-repo）已启用',
-    `- 本地根目录：${cfg.workspaceRoot}（所有 gh_* 路径都限制在此目录内）`,
-    `- 写远端开关：allowPush=${cfg.allowPush}，allowForcePush=${cfg.allowForcePush}，allowApiWrite=${cfg.allowApiWrite}`,
-    `- 仓库白名单：${cfg.allowRepos.length === 0 ? '未按仓库名限制' : cfg.allowRepos.join(', ')}`,
-    `- GitHub 账号：${state?.configured ? `${describeAccount(account)}（来源 ${state.source}）` : '尚未绑定；需要凭据时会自动弹出绑定引导，也可直接调用 gh_account action=bind'}`,
-    '- 典型流程：gh_account(action=bind/status) → gh_repo(action=clone) → gh_file → gh_commit → gh_push',
+    '## GitHub plugin (github-repo) is enabled',
+    `- Local root: ${cfg.workspaceRoot} (every gh_* path is confined to this directory)`,
+    `- Remote-write switches: allowPush=${cfg.allowPush}, allowForcePush=${cfg.allowForcePush}, allowApiWrite=${cfg.allowApiWrite}`,
+    `- Repository allowlist: ${cfg.allowRepos.length === 0 ? 'not restricted by repository name' : cfg.allowRepos.join(', ')}`,
+    `- GitHub account: ${state?.configured ? `${describeAccount(account)} (source ${state.source})` : 'not bound yet; when credentials are needed the binding prompt appears automatically, or call gh_account action=bind directly'}`,
+    '- Typical flow: gh_account(action=bind/status) → gh_repo(action=clone) → gh_file → gh_commit → gh_push',
   ].join('\n')
 }
 
