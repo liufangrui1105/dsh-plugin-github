@@ -1,0 +1,49 @@
+{
+  "name": "dsh-plugin-github",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 插件：把 GitHub 仓库接进 AI —— 账号绑定 / clone / 读文件 / 改文件 / 提交 / 推送 / REST API。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./tools": "./src/tools.js",
+    "./store": "./src/store.js",
+    "./prompt": "./src/prompt.js",
+    "./git": "./src/git.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/git.test.mjs && node test/plugin.test.mjs && node test/account.test.mjs && node test/output-contract.test.mjs && node scripts/verify-registration.mjs",
+    "test:git": "node test/git.test.mjs",
+    "test:plugin": "node test/plugin.test.mjs",
+    "test:account": "node test/account.test.mjs",
+    "test:output": "node test/output-contract.test.mjs",
+    "verify": "node scripts/verify-registration.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liufangrui1105/dsh-plugin-github.git"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "github",
+    "git"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

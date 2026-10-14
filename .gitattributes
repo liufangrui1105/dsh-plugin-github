@@ -1,0 +1,8 @@
+# 统一换行符：避免 Windows 的 core.autocrlf 产出整文件 CRLF 的假 diff。
+* text=auto eol=lf
+
+# 二进制文件不要做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.tgz binary
