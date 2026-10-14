@@ -35,13 +35,13 @@ gh_account(action=bind)            # 首次：绑定账号（或在第一次需�
 需要 Node.js ≥ 20（DSH 自带运行时即可）。
 
 ```sh
-dsh plugin --profile <你的 profile> add github:<owner>/<repo>
+dsh plugin --profile <你的 profile> add github:liufangrui1105/dsh-plugin-github
 ```
 
 例如 desktop profile：
 
 ```sh
-dsh plugin --profile desktop add github:your-name/dsh-plugin-github
+dsh plugin --profile desktop add github:liufangrui1105/dsh-plugin-github
 ```
 
 也可以装本地目录或打包产物：
