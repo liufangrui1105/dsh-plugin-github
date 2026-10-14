@@ -57,6 +57,10 @@ dsh plugin --profile desktop add ./dsh-plugin-github-0.1.0.tgz   # pnpm pack 的
 > **不需要 `prepare` 构建脚本、也不会要求 `allowBuilds` 授权**。
 > 插件目录里刻意没有 `prepare` / `build` / `install` 等脚本——它们的存在反而会让 npm 在每次安装时重建依赖。
 
+> **关于升级**：从 GitHub 安装会按默认分支解析。改了代码后，重新执行一次
+> `add github:liufangrui1105/dsh-plugin-github` 让 pnpm 重新解析并**重启 DSH**才会生效——
+> 热加载不会重新拉取依赖，这点容易误会成「改了没用」。
+
 卸载：
 
 ```sh
