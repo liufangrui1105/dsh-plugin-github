@@ -1,0 +1,51 @@
+name: test
+
+# The plugin is plain ESM JavaScript with no build step, so CI only needs to run
+# the suites. Windows is included on purpose: src/git.js carries platform-specific
+# handling (temporary files instead of pipes for a child's stdio, backslash paths,
+# `git.cmd` resolution), and that is the platform the plugin is developed on.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # git and bash are present on both runners; the suites need no network.
+      - name: Show tool versions
+        run: |
+          node --version
+          git --version
+
+      - name: Git layer
+        run: node test/git.test.mjs
+
+      - name: Plugin end to end
+        run: node test/plugin.test.mjs
+
+      - name: Account binding and first-run prompt
+        run: node test/account.test.mjs
+
+      - name: Host output contract
+        run: node test/output-contract.test.mjs
+
+      - name: Tool registration constraints
+        run: node scripts/verify-registration.mjs
