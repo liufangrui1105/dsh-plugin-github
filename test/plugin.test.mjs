@@ -203,7 +203,7 @@ await runner.test('gh_pull brings new remote commits back into the local clone',
   try {
     const plugin = await loadPlugin()
     const { ctx, tools } = fakeContext()
-    plugin.apply(ctx, { workspaceRoot: context.workspace, allowRepos: [upstream.allowRule],
+    plugin.apply(ctx, { workspaceRoot: context.workspace, gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: [upstream.allowRule],
       allowNonGithubRemotes: true, allowPush: true })
     const cloned = await call(tools, 'gh_repo', { repo: upstream.repo, action: 'clone' })
 
@@ -232,7 +232,7 @@ await runner.test('allowPush=false refuses pushes; a repository outside the allo
   try {
     const plugin = await loadPlugin()
     const { ctx, tools } = fakeContext()
-    plugin.apply(ctx, { workspaceRoot: context.workspace, allowRepos: [upstream.allowRule],
+    plugin.apply(ctx, { workspaceRoot: context.workspace, gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: [upstream.allowRule],
       allowNonGithubRemotes: true, allowPush: false })
 
     await call(tools, 'gh_repo', { repo: upstream.repo, action: 'clone' })
@@ -267,7 +267,7 @@ await runner.test('gh_file edit count validation, put overwrite protection and p
   try {
     const plugin = await loadPlugin()
     const { ctx, tools } = fakeContext()
-    plugin.apply(ctx, { workspaceRoot: context.workspace, allowRepos: [upstream.allowRule],
+    plugin.apply(ctx, { workspaceRoot: context.workspace, gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: [upstream.allowRule],
       allowNonGithubRemotes: true })
 
     await expectReject(
@@ -601,7 +601,7 @@ await runner.test('regression D3: without a repo argument, even read-only calls 
     sent.push(String(url))
     return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
   }, async () => {
-    plugin.apply(ctx, { workspaceRoot: process.cwd(), allowRepos: ['me/allowed'] })
+    plugin.apply(ctx, { workspaceRoot: process.cwd(), gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: ['me/allowed'] })
 
     await expectReject(() => call(tools, 'gh_api', { endpoint: '/repos/victim/secret/issues' }), /allowRepos/)
     assert.equal(sent.length, 0)
@@ -664,14 +664,14 @@ await runner.test('regression D4: allowRepos rejects full-URL rules and invalid 
   const { ctx } = fakeContext()
   for (const bad of ['https://github.com/a/b', 'http://127.0.0.1:8080/a/b.git', 'a', 'a/b/c']) {
     assert.throws(
-      () => plugin.apply(ctx, { workspaceRoot: process.cwd(), allowRepos: [bad] }),
+      () => plugin.apply(ctx, { workspaceRoot: process.cwd(), gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: [bad] }),
       /not a valid owner\/repo form/,
       `rule "${bad}" should be rejected`,
     )
   }
   // Valid forms must not throw.
   for (const good of ['owner/repo', 'owner/*', '*/repo', '*', 'owner/repo.git']) {
-    plugin.apply(ctx, { workspaceRoot: process.cwd(), allowRepos: [good] })
+    plugin.apply(ctx, { workspaceRoot: process.cwd(), gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: [good] })
   }
 })
 
@@ -698,7 +698,7 @@ await runner.test('regression D8: with a corrupt repository, status/log/branches
   const root = await context.setup()
   const plugin = await loadPlugin()
   const { ctx, tools } = fakeContext()
-  plugin.apply(ctx, { workspaceRoot: context.workspace, allowRepos: ['broken/repo'], allowPush: false })
+  plugin.apply(ctx, { workspaceRoot: context.workspace, gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: ['broken/repo'], allowPush: false })
 
   const { mkdir } = await import('node:fs/promises')
   const { repoDirName } = await import('../src/git.js')
@@ -716,7 +716,7 @@ await runner.test('regression D9/D10: truncated semantics are correct and the lo
   try {
     const plugin = await loadPlugin()
     const { ctx, tools } = fakeContext()
-    plugin.apply(ctx, { workspaceRoot: context.workspace, allowRepos: [upstream.allowRule],
+    plugin.apply(ctx, { workspaceRoot: context.workspace, gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: [upstream.allowRule],
       allowNonGithubRemotes: true })
     await call(tools, 'gh_repo', { repo: upstream.repo, action: 'clone' })
 
@@ -746,7 +746,7 @@ await runner.test('regression D3/D2: a pushurl redirect and an untrusted host ar
     const plugin = await loadPlugin()
     const { ctx, tools } = fakeContext()
     // Note: allowNonGithubRemotes is **not** enabled here, so host validation is active.
-    plugin.apply(ctx, { workspaceRoot: context.workspace, allowRepos: ['127.0.0.1/*'], allowPush: true })
+    plugin.apply(ctx, { workspaceRoot: context.workspace, gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: ['127.0.0.1/*'], allowPush: true })
 
     const { runGit, repoDirName } = await import('../src/git.js')
     const dir = path.join(context.workspace, repoDirName(upstream.slug))
@@ -826,7 +826,7 @@ await runner.test('regression D1: .. inside an endpoint cannot bypass the allowl
     sent.push(String(url))
     return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
   }, async () => {
-    plugin.apply(ctx, { workspaceRoot: process.cwd(), allowRepos: ['allowed/repo'] })
+    plugin.apply(ctx, { workspaceRoot: process.cwd(), gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: ['allowed/repo'] })
 
     // After normalization the target is secret/repo, which the allowlist must refuse.
     await expectReject(
@@ -851,7 +851,7 @@ await runner.test('regression D4: with the allowlist active, repository-level en
     sent.push(String(url))
     return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
   }, async () => {
-    plugin.apply(ctx, { workspaceRoot: process.cwd(), allowRepos: ['allowed/repo'] })
+    plugin.apply(ctx, { workspaceRoot: process.cwd(), gitAuthorName: 'dsh-test', gitAuthorEmail: 'dsh@example.com', allowRepos: ['allowed/repo'] })
 
     for (const endpoint of ['/search/code?q=secret', '/user/repos', '/users/someone/repos', '/orgs/someone/repos']) {
       await expectReject(() => call(tools, 'gh_api', { endpoint }), /Cannot tell the target repository|allowRepos/)
@@ -889,6 +889,50 @@ await runner.test('regression D5: with the allowlist active, create must pass ow
     )
     assert.equal(sent.length, 0)
   })
+})
+
+await runner.test('a commit works on a machine with no global git identity', async context => {
+  // A clean CI runner (and a fresh user account) has no `user.name` / `user.email`
+  // anywhere, and git then refuses to commit with "Author identity unknown".
+  // The plugin must not depend on the machine: `gitAuthorName` / `gitAuthorEmail`
+  // supply the identity for the commit it makes, so this asserts the guarantee by
+  // taking the global config away entirely.
+  const root = await context.setup()
+  const upstream = await makeUpstream(root)
+  try {
+    const plugin = await loadPlugin()
+    const { ctx, tools } = fakeContext()
+    plugin.apply(ctx, {
+      workspaceRoot: context.workspace,
+      allowRepos: [upstream.allowRule],
+      allowPush: true,
+      allowNonGithubRemotes: true,
+      gitAuthorName: 'dsh-test',
+      gitAuthorEmail: 'dsh@example.com',
+    })
+    const cloned = await call(tools, 'gh_repo', { repo: upstream.repo, action: 'clone' })
+    await call(tools, 'gh_file', { repo: upstream.repo, action: 'put', path: 'identity.txt', content: 'x\n' })
+
+    const savedGlobal = process.env.GIT_CONFIG_GLOBAL
+    const savedSystem = process.env.GIT_CONFIG_NOSYSTEM
+    process.env.GIT_CONFIG_GLOBAL = process.platform === 'win32' ? 'NUL' : '/dev/null'
+    process.env.GIT_CONFIG_NOSYSTEM = '1'
+    try {
+      const committed = await call(tools, 'gh_commit', { repo: upstream.repo, message: 'test: commit without a global git identity' })
+      assert.equal(committed.ok, true, `commit should not need the machine's git config: ${committed.error ?? ''}`)
+
+      const { runGit } = await import('../src/git.js')
+      const author = await runGit(['log', '-1', '--pretty=format:%an <%ae>'], { cwd: cloned.path })
+      assert.equal(author.stdout.trim(), 'dsh-test <dsh@example.com>')
+    } finally {
+      if (savedGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = savedGlobal
+      if (savedSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM
+      else process.env.GIT_CONFIG_NOSYSTEM = savedSystem
+    }
+  } finally {
+    await upstream.http.close()
+  }
 })
 
 runner.finish()

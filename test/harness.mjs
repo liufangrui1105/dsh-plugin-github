@@ -150,7 +150,7 @@ export async function makeUpstream(root) {
   await mkdir(bare, { recursive: true })
   assert.equal((await runGit(['init', '--bare', '--initial-branch=main', bare])).ok, true, 'init bare repo')
   assert.equal((await runGit(['config', 'http.receivepack', 'true'], { cwd: bare })).ok, true, 'allow HTTP push')
-  assert.equal((await runGit(['init', '--initial-branch=main', seed])).ok, true, 'init seed repo')
+  assert.equal((await runGit(['-c', 'core.autocrlf=false', 'init', '--initial-branch=main', seed])).ok, true, 'init seed repo')
   await writeFile(path.join(seed, 'README.md'), '# demo\n\nfirst line\n', 'utf8')
   await writeFile(path.join(seed, 'src.txt'), 'a\nb\nc\n', 'utf8')
   const author = ['-c', 'user.name=test', '-c', 'user.email=test@example.com']

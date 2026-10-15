@@ -493,6 +493,13 @@ export async function cloneOrFetch(options) {
 
   const args = ['clone']
   if (depth && depth > 0) args.push(`--depth=${depth}`)
+  // The working copy must not depend on the operator's git configuration for line
+  // endings. Windows git defaults `core.autocrlf` to `true`, which rewrites every
+  // checked-out file to CRLF: this plugin then reports line numbers, diffs and
+  // exact-match search against CRLF text, while any file the tool writes is LF —
+  // so an edit that works on one machine fails on a clean one. A repository's own
+  // `.gitattributes` still wins, because git applies it after this setting.
+  args.push('-c', 'core.autocrlf=false')
   args.push(target, dir)
   const result = await runGit(args, { token, signal, timeoutMs: 300_000 })
   return { reused: false, result }

@@ -72,8 +72,19 @@ await runner.test('remoteUrl / repoSlug / repoDirName normalization', async () =
 
   assert.equal(repoDirName('owner/my-repo'), 'owner__my-repo')
   assert.equal(repoDirName('https://github.com/owner/my-repo.git'), 'owner__my-repo')
-  assert.equal(repoDirName('file:///E:/tmp/foo/origin.git'), 'origin')
-  assert.equal(repoDirName('E:\\tmp\\foo\\bar'), 'bar')
+
+  // Local paths are platform-dependent, so assert against each platform's own
+  // absolute form: an `E:\...` path is not absolute on Linux, and a `/tmp/...`
+  // path is not absolute on Windows. Checking `path.isAbsolute` first keeps the
+  // expectation honest instead of hard-coding one platform's spelling.
+  const windowsPath = 'E:\\tmp\\foo\\bar'
+  if (path.isAbsolute(windowsPath)) assert.equal(repoDirName(windowsPath), 'bar')
+  const posixPath = '/tmp/foo/bar'
+  if (path.isAbsolute(posixPath)) assert.equal(repoDirName(posixPath), 'bar')
+
+  // file:// URLs resolve on every platform.
+  const fileUrl = process.platform === 'win32' ? 'file:///C:/tmp/foo/origin.git' : 'file:///tmp/foo/origin.git'
+  assert.equal(repoDirName(fileUrl), 'origin')
 })
 
 await runner.test('clone → reuse → edit a file → status → commit end to end (local bare remote)', async context => {
@@ -88,7 +99,7 @@ await runner.test('clone → reuse → edit a file → status → commit end to 
 
   assert.equal((await runGit(['init', '--bare', '--initial-branch=main', bare])).ok, true)
 
-  assert.equal((await runGit(['init', '--initial-branch=main', seed])).ok, true)
+  assert.equal((await runGit(['-c', 'core.autocrlf=false', 'init', '--initial-branch=main', seed])).ok, true)
   await writeFile(path.join(seed, 'README.md'), '# seed\n', 'utf8')
   const author = ['-c', 'user.name=t', '-c', 'user.email=t@e']
   assert.equal((await runGit([...author, 'add', '.'], { cwd: seed })).ok, true, 'add seed')
@@ -140,7 +151,7 @@ await runner.test('the token goes only into the http.extraHeader environment var
   const { mkdtemp } = await import('node:fs/promises')
   const root = await mkdtemp(path.join(tmpdir(), 'dsh-gh-token-'))
   const repo = path.join(root, 'repo')
-  assert.equal((await runGit(['init', '--initial-branch=main', repo])).ok, true)
+  assert.equal((await runGit(['-c', 'core.autocrlf=false', 'init', '--initial-branch=main', repo])).ok, true)
 
   // Use a remote that always fails; the command still runs with our env, which is enough to inspect argv and the config file.
   await runGit(['remote', 'add', 'origin', 'https://127.0.0.1:1/nope.git'], { cwd: repo })
