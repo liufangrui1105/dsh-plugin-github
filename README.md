@@ -106,6 +106,7 @@ Configuration lives under the plugin row's `config:` in the profile's `cordis.pa
 | Field | Default | Meaning |
 |---|---|---|
 | `workspaceRoot` | host process working directory | Root for local clones. **Every `gh_*` path is confined to this directory** |
+| `gitExecutable` | `git` | The git executable to run. Set it when git lives somewhere unusual — a bundled runtime, a portable install — instead of editing `PATH` |
 | `allowRepos` | `[]` | Repository allowlist: `owner/repo`, `owner/*`, `*/repo`, `*`. Empty means no restriction by repository name. **Only strict `owner/repo` is accepted; full URLs are rejected** |
 | `allowPush` | `false` | Allow pushing and creating remote repositories. **While off, `gh_push` and `gh_commit{push:true}` are refused outright** |
 | `allowForcePush` | `false` | Allow `--force-with-lease` (still requires `allowPush`) |
@@ -192,12 +193,17 @@ To let the agent actually clone and push, set the session to `danger-full-access
 ## 8. Development
 
 ```sh
-node test/git.test.mjs               # git execution layer: 9 cases
-node test/plugin.test.mjs            # plugin end to end: 27 cases (real git + a local smart-HTTP remote)
-node test/account.test.mjs           # account binding and first-run prompt: 11 cases
+node test/git.test.mjs               # git execution layer: 11 cases
+node test/plugin.test.mjs            # plugin end to end: 28 cases (real git + a local smart-HTTP remote)
+node test/account.test.mjs           # account binding and first-run prompt: 12 cases
 node test/output-contract.test.mjs   # host output contract (lossless JSON): 5 cases
 node scripts/verify-registration.mjs # tool registration constraints: 4 cases
+node scripts/validate-manifest.mjs   # package manifest and bundle patch wiring
 ```
+
+`npm test` runs the four suites; `npm run verify` runs the two validators. CI runs all of it on
+Ubuntu and Windows across Node 20 and 22 — Windows included on purpose, because `src/git.js`
+carries platform-specific handling.
 
 The tests need no internet: the remote is a local smart-HTTP server bridged onto `git http-backend` (`test/git-http-server.mjs`), and clone / fetch / push run for real.
 
@@ -211,6 +217,9 @@ The tests need no internet: the remote is a local smart-HTTP server bridged onto
 dsh-plugin-github/
 ├── package.json              # declares dsh.bundle.patch
 ├── cordis.patch.yml          # inserts the plugin row into a profile's config layer (with all defaults)
+├── README.md / README.zh.md  # this file, and its Chinese counterpart
+├── CHANGELOG.md              # release notes
+├── SECURITY.md               # how to report a vulnerability, and what is a known exposure
 ├── src/
 │   ├── index.js              # plugin entry: builds ToolDefinitions and registers them
 │   ├── tools.js              # the 8 tools: parameter declarations and implementations
@@ -220,7 +229,10 @@ dsh-plugin-github/
 │   ├── auth.js               # token resolution (bound account → env → credential service → .env)
 │   ├── repos.js              # repository resolution, allowlist, path-escape guards
 │   └── api.js                # GitHub REST client (Node fetch)
-├── scripts/verify-registration.mjs
+├── scripts/
+│   ├── verify-registration.mjs  # the tool definitions against dsh-tools' registration rules
+│   └── validate-manifest.mjs    # package.json ↔ cordis.patch.yml ↔ exported plugin name
+├── .github/workflows/test.yml   # CI: Ubuntu + Windows, Node 20 + 22
 └── test/                     # test harness + 4 suites + the local git HTTP server
 ```
 

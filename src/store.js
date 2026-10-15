@@ -207,23 +207,39 @@ export function createFileStore(file) {
 
   const load = async () => {
     if (cache !== undefined) return cache
+    let raw
     try {
-      const parsed = JSON.parse(await readFile(file, 'utf8'))
+      raw = await readFile(file, 'utf8')
+    } catch {
+      // No file yet: empty storage. Not an error.
+      cache = { version: 1, accounts: [] }
+      return cache
+    }
+    try {
+      const parsed = JSON.parse(raw)
       cache = {
         version: 1,
         ...(typeof parsed?.active === 'string' ? { active: parsed.active } : {}),
         accounts: Array.isArray(parsed?.accounts) ? parsed.accounts.filter(isAccountRecord) : [],
       }
     } catch {
-      // The file is missing or corrupt: treat it as empty storage. Do not overwrite
-      // the user's content when it is corrupt — we only write to disk on an actual write.
+      // The file exists but does not parse. Keep it as an empty store so the plugin
+      // stays usable, but move the unreadable file aside first: it holds bound
+      // account tokens, and silently discarding it would destroy the only copy.
+      await rename(file, `${file}.corrupt-${Date.now()}`)
+        .then(() => undefined, () => undefined)
       cache = { version: 1, accounts: [] }
     }
     return cache
   }
 
   const persist = async state => {
-    await mkdir(path.dirname(file), { recursive: true })
+    const directory = path.dirname(file)
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    // The file holds account tokens, so keep both the file and its directory private
+    // on POSIX. Windows has no equivalent semantic; the user profile's ACL is what
+    // protects it there.
+    await chmod(directory, 0o700).catch(() => {})
     const temp = `${file}.tmp-${process.pid}`
     await writeFile(temp, `${JSON.stringify({ version: 1, ...state }, null, 2)}\n`, 'utf8')
     await chmod(temp, 0o600).catch(() => {})

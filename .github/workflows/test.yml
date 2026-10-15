@@ -49,3 +49,6 @@ jobs:
 
       - name: Tool registration constraints
         run: node scripts/verify-registration.mjs
+
+      - name: Package manifest and bundle patch
+        run: node scripts/validate-manifest.mjs

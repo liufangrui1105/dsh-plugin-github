@@ -20,6 +20,8 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
@@ -28,7 +30,9 @@
     "test:plugin": "node test/plugin.test.mjs",
     "test:account": "node test/account.test.mjs",
     "test:output": "node test/output-contract.test.mjs",
-    "verify": "node scripts/verify-registration.mjs"
+    "verify": "node scripts/verify-registration.mjs && node scripts/validate-manifest.mjs",
+    "verify:registration": "node scripts/verify-registration.mjs",
+    "verify:manifest": "node scripts/validate-manifest.mjs"
   },
   "repository": {
     "type": "git",

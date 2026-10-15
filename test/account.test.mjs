@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import {
   createRunner,
@@ -495,5 +495,30 @@ async function expectReject(operation, pattern) {
   }
   return failed
 }
+
+await runner.test('an unreadable account file is set aside instead of silently destroyed', async context => {
+  // The file holds bound account tokens, so if it cannot be parsed the plugin must
+  // keep the original: silently starting from empty would destroy the only copy.
+  const root = await context.setup()
+  const file = path.join(root, 'accounts.json')
+  const broken = '{ this is not json'
+  await writeFile(file, broken, 'utf8')
+
+  const store = createFileStore(file)
+  const { manager } = await managerWith(store, { t1: { login: 'alice' } })
+
+  // Storage reads as empty, but the plugin still works.
+  assert.deepEqual(await manager.list(), [])
+  const bound = await manager.bind('t1')
+  assert.equal(bound.login, 'alice')
+
+  const entries = await readdir(root)
+  const quarantined = entries.filter(name => name.startsWith('accounts.json.corrupt-'))
+  assert.equal(quarantined.length, 1, `expected one quarantined copy, saw: ${entries.join(', ')}`)
+  assert.equal(await readFile(path.join(root, quarantined[0]), 'utf8'), broken, 'the original bytes must be preserved')
+
+  // And the store is usable again.
+  assert.equal((await manager.active()).login, 'alice')
+})
 
 runner.finish()

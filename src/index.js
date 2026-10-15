@@ -17,6 +17,7 @@
 import path from 'node:path'
 import { assertAllowRules, normalizeConfig } from './repos.js'
 import { resolveToken } from './auth.js'
+import { setGitExecutable } from './git.js'
 import { createAccountManager, describeAccount, selectStore } from './store.js'
 import { buildToolSpecs } from './tools.js'
 import { githubRequest } from './api.js'
@@ -32,7 +33,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'allowApiReadOutsideAllowlist', 'allowNonGithubRemotes',
   'tokenRef', 'tokenEnv', 'dotenv', 'commandTimeoutMs', 'maxDiffChars', 'maxReadChars',
   'gitAuthorName', 'gitAuthorEmail',
-  'allowAutoBind', 'promptForToken', 'accountStorePath',
+  'allowAutoBind', 'promptForToken', 'accountStorePath', 'gitExecutable',
 ])
 
 /** Parameter declarations (this plugin's simplified DSL) → the supported JSON Schema subset. */
@@ -164,6 +165,8 @@ export function apply(ctx, config) {
   }
 
   const cfg = normalizeConfig(raw, process.cwd())
+  // Point every git invocation at the configured executable (default: git on PATH).
+  setGitExecutable(cfg.gitExecutable)
   // Invalid allowlist rules fail at load time instead of only when the model makes a call.
   assertAllowRules(cfg)
 

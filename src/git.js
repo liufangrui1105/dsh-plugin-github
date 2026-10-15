@@ -45,6 +45,7 @@ export async function runProcess(command, args, options = {}) {
     signal,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     input,
+    redact,
   } = options
 
   let scratch
@@ -160,20 +161,30 @@ export async function runProcess(command, args, options = {}) {
   await rm(scratch, { recursive: true, force: true }).catch(() => {})
 
   const truncated = stdout.truncated || stderr.truncated
+  // Scrub any known secret out of captured output before it can reach the model.
+  // git should never echo a credential that arrived through the environment, but
+  // "should never" is not a guarantee worth betting a token on: a failed
+  // authentication can put the request back into an error message verbatim.
+  const secrets = (redact ?? []).filter(secret => typeof secret === 'string' && secret.length >= 8)
+  const scrub = value => {
+    let text = value
+    for (const secret of secrets) text = text.split(secret).join('[redacted]')
+    return text
+  }
   const base = {
     code: null, signal: null,
-    stdout: stdout.text, stderr: stderr.text,
+    stdout: scrub(stdout.text), stderr: scrub(stderr.text),
     truncated, timedOut: false, aborted: false,
   }
 
-  if (result.kind === 'error') return { ...base, ok: false, error: result.error }
+  if (result.kind === 'error') return { ...base, ok: false, error: scrub(result.error) }
   if (result.kind === 'aborted') {
     return { ...base, ok: false, aborted: true, signal: 'ABORTED', error: 'The call was cancelled (AbortSignal)' }
   }
   if (result.kind === 'timeout') {
     return {
       ...base, ok: false, timedOut: true, signal: 'TIMEOUT',
-      error: `Command timed out (${timeoutMs}ms): ${command} ${args.join(' ')}`,
+      error: `Command timed out (${timeoutMs}ms): ${scrub(`${command} ${args.join(' ')}`)}`,
     }
   }
   return { ...base, ok: result.code === 0, code: result.code, signal: result.closeSignal }
@@ -221,6 +232,10 @@ function gitEnv(token) {
     GIT_ASKPASS: '',
     GCM_INTERACTIVE: 'never',
     GIT_CONFIG_NOSYSTEM: '0',
+    // Never take git's optional locks. Refreshing the index would otherwise be able
+    // to collide with whatever the user is doing in another terminal, and nothing
+    // this plugin runs needs an optional lock.
+    GIT_OPTIONAL_LOCKS: '0',
     LC_ALL: 'C',
   }
   if (token) {
@@ -234,17 +249,48 @@ function gitEnv(token) {
 }
 
 /**
+ * The git executable to run. Defaults to `git` on PATH; a host whose git lives
+ * somewhere unusual (a bundled runtime, a portable install) can point at it with
+ * the `gitExecutable` config field instead of editing PATH.
+ */
+let gitExecutable = 'git'
+
+/**
+ * Point the plugin at a specific git executable.
+ * @param {unknown} value
+ * @returns {string} the executable now in effect
+ */
+export function setGitExecutable(value) {
+  const candidate = typeof value === 'string' ? value.trim() : ''
+  // A control character here would come from a malformed config value; a command
+  // containing one is never intended, so fall back to the default.
+  gitExecutable = candidate !== '' && !/[\0\r\n]/.test(candidate) ? candidate : 'git'
+  return gitExecutable
+}
+
+/** The git executable currently in effect. */
+export function currentGitExecutable() {
+  return gitExecutable
+}
+
+/**
  * Run a single git command.
  * @param {string[]} args
  * @param {{cwd?: string, token?: string, signal?: AbortSignal, timeoutMs?: number}} options
  */
 export async function runGit(args, options = {}) {
   const { cwd, token, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = options
-  const result = await runProcess('git', args, {
+  const result = await runProcess(gitExecutable, args, {
     cwd,
     env: gitEnv(token),
     signal,
     timeoutMs,
+    // Belt and braces on top of the environment scrub: if git ever echoes the
+    // credential (an authentication failure quoting the request), redact both the
+    // raw token and the header value that carried it.
+    redact: token
+      ? [token, Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64')]
+      : [],
   })
   return { ...result, command: `git ${args.join(' ')}` }
 }

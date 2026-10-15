@@ -105,6 +105,7 @@ PAT 最小权限：读写仓库内容给 **`repo`**（fine-grained token 给 Con
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `workspaceRoot` | 宿主进程工作目录 | 本地克隆根目录。**所有 `gh_*` 路径都被限制在这个目录之内** |
+| `gitExecutable` | `git` | 要执行的 git 可执行文件。当 git 不在常规位置（内置运行时、便携版安装）时指定它，而不是去改 `PATH` |
 | `allowRepos` | `[]` | 仓库白名单，支持 `owner/repo`、`owner/*`、`*/repo`、`*`。空数组 = 不按仓库名限制。**只接受严格 owner/repo，完整 URL 会被拒绝** |
 | `allowPush` | `false` | 是否允许推送/建远端仓库。**不开则 `gh_push` 与 `gh_commit{push:true}` 直接拒绝** |
 | `allowForcePush` | `false` | 是否允许 `--force-with-lease` 强推（仍受 `allowPush` 约束） |
@@ -191,12 +192,15 @@ DSH 默认的 `workspace-write` 沙箱会挡住 git 的网络传输（实测报 
 ## 8. 开发
 
 ```sh
-node test/git.test.mjs               # Git 执行层：9 项
-node test/plugin.test.mjs            # 插件端到端：27 项（真实 git + 本地 smart HTTP 远端）
-node test/account.test.mjs           # 账号绑定与首次引导：11 项
+node test/git.test.mjs               # Git 执行层：11 项
+node test/plugin.test.mjs            # 插件端到端：28 项（真实 git + 本地 smart HTTP 远端）
+node test/account.test.mjs           # 账号绑定与首次引导：12 项
 node test/output-contract.test.mjs   # 宿主 output 契约（无损 JSON）：5 项
 node scripts/verify-registration.mjs # 注册约束：4 项
+node scripts/validate-manifest.mjs   # package.json ↔ cordis.patch.yml ↔ 导出的插件名
 ```
+
+`npm test` 跑四个测试套件，`npm run verify` 跑两个校验脚本。CI 在 Ubuntu 与 Windows、Node 20 与 22 上全部跑一遍——**特意包含 Windows**，因为 `src/git.js` 里有平台相关处理。
 
 测试不需要外网：远端用 `git http-backend` 桥接的本地 smart HTTP 服务（`test/git-http-server.mjs`），clone / fetch / push 全链路都是真的。
 
@@ -210,6 +214,9 @@ node scripts/verify-registration.mjs # 注册约束：4 项
 dsh-plugin-github/
 ├── package.json              # 声明 dsh.bundle.patch
 ├── cordis.patch.yml          # 把插件行插入 profile 配置层（含全部默认配置）
+├── README.md / README.zh.md  # 英文版与本文
+├── CHANGELOG.md              # 版本变更记录
+├── SECURITY.md               # 漏洞上报方式，以及哪些是已知暴露面
 ├── src/
 │   ├── index.js              # 插件入口：构造 ToolDefinition 并注册
 │   ├── tools.js              # 8 个工具的参数声明与实现
@@ -219,7 +226,10 @@ dsh-plugin-github/
 │   ├── auth.js               # token 解析（绑定账号 → 环境变量 → 凭据服务 → .env）
 │   ├── repos.js              # 仓库定位、白名单、路径越界防护
 │   └── api.js                # GitHub REST 客户端（Node fetch）
-├── scripts/verify-registration.mjs
+├── scripts/
+│   ├── verify-registration.mjs  # 按 dsh-tools 的注册规则校验工具定义
+│   └── validate-manifest.mjs    # package.json ↔ cordis.patch.yml ↔ 导出的插件名
+├── .github/workflows/test.yml   # CI：Ubuntu + Windows，Node 20 + 22
 └── test/                     # 测试 harness + 4 个套件 + 本地 git HTTP 服务
 ```
 

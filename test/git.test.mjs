@@ -18,6 +18,8 @@ import {
   cloneOrFetch,
   headCommit,
   statusEntries,
+  setGitExecutable,
+  currentGitExecutable,
 } from '../src/git.js'
 
 const runner = createRunner('git.test.mjs')
@@ -143,6 +145,45 @@ await runner.test('clone → reuse → edit a file → status → commit end to 
   } finally {
     await http.close()
   }
+})
+
+await runner.test('a credential echoed by git is redacted before it can reach the model', async () => {
+  // git should never print a credential that arrived through the environment, but a
+  // failed authentication can quote the request back. `git config --get` on the very
+  // key carrying the header is the cheapest way to make git echo that value.
+  const { mkdtemp } = await import('node:fs/promises')
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-gh-redact-'))
+  const repo = path.join(root, 'repo')
+  assert.equal((await runGit(['init', '--initial-branch=main', repo])).ok, true)
+
+  const token = 'ghp_REDACTION_CANARY_0123456789'
+  const echoed = await runGit(['config', '--get', 'http.extraHeader'], { cwd: repo, token })
+  const encoded = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64')
+
+  const combined = `${echoed.stdout}${echoed.stderr}${echoed.error ?? ''}`
+  assert.ok(!combined.includes(token), `the raw token leaked: ${combined}`)
+  assert.ok(!combined.includes(encoded), `the encoded token leaked: ${combined}`)
+})
+
+await runner.test('setGitExecutable points git at an alternative executable', async () => {
+  const original = currentGitExecutable()
+  try {
+    // A blank value must not become the command; it falls back to `git`.
+    assert.equal(setGitExecutable(''), 'git')
+    assert.equal(setGitExecutable('   '), 'git')
+    assert.equal(setGitExecutable('git'), 'git')
+    assert.equal(currentGitExecutable(), 'git')
+
+    // An executable that cannot be started fails clearly rather than crashing.
+    setGitExecutable('definitely-not-a-git-binary')
+    assert.equal(currentGitExecutable(), 'definitely-not-a-git-binary')
+    const result = await runGit(['--version'], { timeoutMs: 10000 })
+    assert.equal(result.ok, false)
+    assert.match(String(result.error ?? result.stderr), /definitely-not-a-git-binary/)
+  } finally {
+    setGitExecutable(original)
+  }
+  assert.equal(currentGitExecutable(), original)
 })
 
 await runner.test('the token goes only into the http.extraHeader environment variable, never into argv or the repository config', async () => {

@@ -66,12 +66,17 @@
         # Root directory for local clones. Omitted means the host process's
         # working directory.
         # workspaceRoot: '/path/to/clones'
+        # The git executable to run. Omitted means `git` on PATH; set this when
+        # git lives somewhere unusual (a bundled runtime, a portable install).
+        # gitExecutable: 'git'
         # Timeout for a single git command, in milliseconds.
         commandTimeoutMs: 120000
         # Maximum characters of a diff returned to the model.
         maxDiffChars: 20000
         # Maximum characters of a file read returned to the model.
         maxReadChars: 40000
-        # Commit author (omitted means the git global configuration).
+        # Commit author (omitted means the git global configuration; set both when
+        # the machine has no global identity, or commits fail with
+        # "Author identity unknown").
         # gitAuthorName: 'Your Name'
         # gitAuthorEmail: 'you@example.com'

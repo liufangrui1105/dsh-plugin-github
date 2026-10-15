@@ -58,6 +58,8 @@ export function normalizeConfig(raw, fallbackCwd) {
     promptForToken: cfg.promptForToken !== false,
     /** Account store file path (only effective when the DSH credential service is not used). When omitted it is placed under $DSH_HOME. */
     accountStorePath: typeof cfg.accountStorePath === 'string' && cfg.accountStorePath !== '' ? cfg.accountStorePath : undefined,
+    /** git executable to run; a host whose git is not on PATH can point at it directly. */
+    gitExecutable: typeof cfg.gitExecutable === 'string' && cfg.gitExecutable.trim() !== '' ? cfg.gitExecutable.trim() : 'git',
     gitAuthorName: typeof cfg.gitAuthorName === 'string' ? cfg.gitAuthorName : undefined,
     gitAuthorEmail: typeof cfg.gitAuthorEmail === 'string' ? cfg.gitAuthorEmail : undefined,
   }
